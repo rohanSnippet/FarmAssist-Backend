@@ -162,10 +162,11 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
+    "https://farmass.netlify.app"
 ]
 
 # Optional: Handle CSRF trust if you are using Session Authentication
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
-    "https://your-frontend.vercel.app",
+    "https://farmass.netlify.app",
 ]
