@@ -70,12 +70,12 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
 ]
 
 ROOT_URLCONF = 'backend.urls'
@@ -108,12 +108,23 @@ WSGI_APPLICATION = 'backend.wsgi.application'
     }
 } """
 
-DATABASES = {
+""" DATABASES = {
     'default': dj_database_url.config(
         default='postgresql://neondb_owner:npg_F4jKoklYgv7M@ep-morning-wave-a4ymokk8-pooler.us-east-1.aws.neon.tech/FarmAssist1?sslmode=require&channel_binding=require',
         conn_max_age=600,
         ssl_require=True
     )
+} """
+
+DATABASES = {
+    'default':{
+        'ENGINE':'django.db.backends.postgresql',
+        'NAME': os.environ.get('DB_NAME','farmassist'),
+        'HOST': os.environ.get('DB_HOST','localhost'),
+        'USER': os.environ.get('DB_USER','root'),
+        'PASSWORD': os.environ.get('DB_PASSWORD','root'),
+        'PORT': os.environ.get('DB_PORT','5432'),
+    }
 }
 
 
@@ -162,11 +173,15 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
+    "http://127.0.0.1:5173",
     "https://farmass.netlify.app"
 ]
 
 # Optional: Handle CSRF trust if you are using Session Authentication
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
+    "http://127.0.0.1:5173",
     "https://farmass.netlify.app",
 ]
+
+FIREBASE_CREDENTIALS = os.environ.get('FIREBASE_CREDENTIALS', os.path.join(BASE_DIR, 'serviceAccountKey.json'))
