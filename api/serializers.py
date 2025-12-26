@@ -6,7 +6,7 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ["id","first_name", "last_name", "email", "password"]
+        fields = ["id","first_name", "last_name", "email", "password", "phone_number", "auth_providers"]
         extra_kwargs = {"password": {"write_only": True}}
     
     def validate_email(self, value):
@@ -32,3 +32,16 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         # token['is_admin'] = user.is_superuser
 
         return token
+    
+class UpdateProfileSerializer(serializers.Serializer):
+    """
+    Used when a user (e.g., logged in via Phone) wants to add an Email/Google account.
+    """
+    email = serializers.EmailField()
+    provider = serializers.CharField(required=False) # e.g., 'google'
+
+    def validate_email(self, value):
+        # REQUIREMENT 5: Check if email exists in another account before allowing update
+        if User.objects.filter(email=value).exists():
+            raise serializers.ValidationError("This email is already associated with another account.")
+        return value
