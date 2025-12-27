@@ -9,6 +9,7 @@ import firebase_admin
 from firebase_admin import auth, credentials
 from rest_framework.response import Response
 import os
+from django.utils.timezone import now
 import json
 from django.conf import settings
 
@@ -90,17 +91,23 @@ class FirebaseAuthView(APIView):
                     
                     # Requirement 2: User exists, just link/update provider list
                     if current_provider not in user.auth_providers:
+                       if not user.photo_url: 
+                        user.photo_url = decoded_token.get('picture') or decoded_token.get('photo_url')
                         user.auth_providers.append(current_provider)
+                        user.last_login = now()
                         user.save()
                         
                 except User.DoesNotExist:
-                    if mode == 'login':
-                        return Response({'error': 'Account not found. Please sign up.'}, status=404)
+                    # if mode == 'login':
+                    #     return Response({'error': 'Account not found. Please sign up.'}, status=404)
                     
                     # Create New User (Google)
                     user = User.objects.create_user(
                         email=email,
                         first_name=decoded_token.get('name', '').split(' ')[0],
+                        last_name=' '.join(decoded_token.get('name', '').split(' ')[1:]) if decoded_token.get('name') else '',
+                        photo_url=decoded_token.get('picture') or decoded_token.get('photo_url'),
+                        last_login=now(),
                         phone_number=None,
                         auth_providers=[current_provider]
                     )
@@ -113,6 +120,7 @@ class FirebaseAuthView(APIView):
                     # Update provider list if needed
                     if current_provider not in user.auth_providers:
                         user.auth_providers.append(current_provider)
+                        user.last_login = now()
                         user.save()
 
                 except User.DoesNotExist:
@@ -131,6 +139,7 @@ class FirebaseAuthView(APIView):
                         email=placeholder_email,
                         phone_number=phone,
                         first_name="Farmer",
+                        last_login=now(),
                         auth_providers=[current_provider]
                     )
 

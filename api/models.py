@@ -29,6 +29,7 @@ class User(AbstractUser):
     email = models.EmailField(unique=True)  # Make email the unique identifier
     first_name = models.CharField(max_length=150, blank=False)  # required
     last_name = models.CharField(max_length=150, blank=True)    # optional
+    photo_url = models.URLField(blank=True, null=True)
     phone_number = models.CharField(max_length=20, unique=True, blank=True, null=True)
     auth_providers = models.JSONField(default=list, blank=True)
     USERNAME_FIELD = 'email'  # Tell Django to use email for login
