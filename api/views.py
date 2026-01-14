@@ -100,10 +100,12 @@ class FirebaseAuthView(APIView):
                 except User.DoesNotExist:
                     # if mode == 'login':
                     #     return Response({'error': 'Account not found. Please sign up.'}, status=404)
+                    password = request.data.get("password") if current_provider == "email" else None
                     
                     # Create New User (Google)
                     user = User.objects.create_user(
                         email=email,
+                        password=password, 
                         first_name=decoded_token.get('name', '').split(' ')[0],
                         last_name=' '.join(decoded_token.get('name', '').split(' ')[1:]) if decoded_token.get('name') else '',
                         photo_url=decoded_token.get('picture') or decoded_token.get('photo_url'),
