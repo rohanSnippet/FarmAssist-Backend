@@ -48,11 +48,97 @@ class UserDetailView(generics.RetrieveAPIView):
 class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
 
-
+# New Firebase Auth veiw
 class FirebaseAuthView(APIView):
     """
-    Unified Login/Signup for Google & Phone.
+    Unified Login/Signup for Google, Email/Password & Phone.
+    Accepts a Firebase ID Token, verifies it, and returns Django JWTs.
     """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        id_token = request.data.get('token')
+        
+        # We don't strictly need 'mode' anymore, but can keep it for specific logic
+        # mode = request.data.get('mode') 
+
+        if not id_token:
+            return Response({'error': 'No token provided'}, status=400)
+
+        try:
+            # 1. Verify Token with Firebase
+            decoded_token = auth.verify_id_token(id_token)
+            
+            # Extract Identity Data
+            uid = decoded_token['uid']
+            email = decoded_token.get('email')
+            phone = decoded_token.get('phone_number')
+            
+            # Determine Provider
+            firebase_provider_id = decoded_token.get('firebase', {}).get('sign_in_provider')
+            provider_map = {
+                'google.com': 'google',
+                'phone': 'phone',
+                'password': 'email' # Both standard email signup and google fall here sometimes
+            }
+            current_provider = provider_map.get(firebase_provider_id, firebase_provider_id)
+
+            user = None
+
+            # --- STRATEGY: Find User by Email or Phone ---
+            if email:
+                user = User.objects.filter(email=email).first()
+            elif phone:
+                user = User.objects.filter(phone_number=phone).first()
+
+            # --- CREATE USER IF NOT EXISTS ---
+            if not user:
+                # If authenticating via Phone, we need a dummy email
+                user_email = email if email else f"{uid}@phone.farmassist"
+                
+                user = User.objects.create_user(
+                    email=user_email,
+                    username=None, # Ensure we don't set username if your model doesn't use it
+                    first_name=decoded_token.get('name', 'Farmer').split(' ')[0],
+                    phone_number=phone,
+                    auth_providers=[current_provider]
+                )
+                # CRITICAL: Set password to unusable so they CANNOT login via standard Django auth
+                user.set_unusable_password()
+                user.save()
+            
+            # --- UPDATE EXISTING USER INFO ---
+            else:
+                # Update provider list if this is a new method for them
+                if current_provider not in user.auth_providers:
+                    user.auth_providers.append(current_provider)
+                
+                # Update photo if missing
+                if not user.photo_url:
+                     user.photo_url = decoded_token.get('picture') or decoded_token.get('photo_url')
+                
+                user.last_login = now()
+                user.save()
+
+            # 2. Generate Django JWT Tokens
+            refresh = RefreshToken.for_user(user)
+            refresh['email'] = user.email
+
+            return Response({
+                'refresh': str(refresh),
+                'access': str(refresh.access_token),
+                'user': UserSerializer(user).data
+            })
+
+        except Exception as e:
+            print(f"Auth Error: {e}")
+            return Response({'error': 'Invalid Token'}, status=401)
+
+# Note: You can DELETE 'CreateUserView' and 'CustomTokenObtainPairView' 
+# if you migrate fully to this flow, as they are no longer needed.
+
+""" class FirebaseAuthView(APIView):
+
     permission_classes = [AllowAny]
 
     def post(self, request):
@@ -161,6 +247,7 @@ class FirebaseAuthView(APIView):
         except Exception as e:
             print(f"Auth Error: {e}")
             return Response({'error': 'Invalid Token'}, status=401)
+"""
 
 
 class LinkAccountView(APIView):
