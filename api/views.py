@@ -50,18 +50,11 @@ class CustomTokenObtainPairView(TokenObtainPairView):
 
 # New Firebase Auth veiw
 class FirebaseAuthView(APIView):
-    """
-    Unified Login/Signup for Google, Email/Password & Phone.
-    Accepts a Firebase ID Token, verifies it, and returns Django JWTs.
-    """
     permission_classes = [AllowAny]
 
     def post(self, request):
         id_token = request.data.get('token')
         
-        # We don't strictly need 'mode' anymore, but can keep it for specific logic
-        # mode = request.data.get('mode') 
-
         if not id_token:
             return Response({'error': 'No token provided'}, status=400)
 
