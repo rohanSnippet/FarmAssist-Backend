@@ -22,7 +22,7 @@ class UserSerializer(serializers.ModelSerializer):
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     @classmethod
     def get_token(cls, user):
-        # 1. Get the standard token (which only has user_id)
+
         token = super().get_token(user)
 
         # 2. Add custom claims
