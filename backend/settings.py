@@ -102,6 +102,7 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
+#sqlite
 """ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
@@ -109,6 +110,7 @@ WSGI_APPLICATION = 'backend.wsgi.application'
     }
 } """
 
+# Neon db
 """ DATABASES = {
     'default': dj_database_url.config(
         default='postgresql://neondb_owner:npg_F4jKoklYgv7M@ep-morning-wave-a4ymokk8-pooler.us-east-1.aws.neon.tech/FarmAssist1?sslmode=require&channel_binding=require',
@@ -117,6 +119,7 @@ WSGI_APPLICATION = 'backend.wsgi.application'
     )
 } """
 
+# Postgres db
 """ DATABASES = {
     'default':{
         'ENGINE':'django.db.backends.postgresql',
