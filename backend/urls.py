@@ -14,7 +14,7 @@ urlpatterns = [
     path('api/auth/firebase/', FirebaseAuthView.as_view(), name='firebase_auth'),
     # Link Email/Google to Phone Account
     path('api/auth/link/', LinkAccountView.as_view(), name='link_account'),
-    path('user/me/', UserDetailView.as_view(), name='user_detail'),
+    path('api/me/', UserDetailView.as_view(), name='user_detail'),
     path('predict/', RecommendCropView.as_view(), name='predict'),
     path('history/', UserHistoryView.as_view(), name='history'),
 ]
