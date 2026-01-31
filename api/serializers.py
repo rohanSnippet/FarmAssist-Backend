@@ -8,6 +8,7 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = ["id","first_name", "last_name", "email", "password", "photo_url", "phone_number", "auth_providers"]
         extra_kwargs = {"password": {"write_only": True}}
+        read_only_feilds = ["email", "auth_providers"]
     
     def validate_email(self, value):
         if User.objects.filter(email= value).exists():

@@ -36,7 +36,7 @@ class CreateUserView(generics.CreateAPIView):
 # 2. Example Protected View
 # This is just to test if your authentication is working.
 # It returns the details of the currently logged-in user.
-class UserDetailView(generics.RetrieveAPIView):
+class UserDetailView(generics.RetrieveUpdateAPIView):
     queryset = User.objects.all()
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticated] # Only logged-in users can access this
