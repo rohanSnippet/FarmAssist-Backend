@@ -91,7 +91,7 @@ class FirebaseAuthView(APIView):
                 
                 user = User.objects.create_user(
                     email=user_email,
-                    username=None, # Ensure we don't set username if your model doesn't use it
+                    # username=None, # Ensure we don't set username if your model doesn't use it
                     first_name=decoded_token.get('name', 'Farmer').split(' ')[0],
                     phone_number=phone,
                     auth_providers=[current_provider]
