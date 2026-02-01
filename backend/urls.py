@@ -17,4 +17,5 @@ urlpatterns = [
     path('api/me/', UserDetailView.as_view(), name='user_detail'),
     path('predict/', RecommendCropView.as_view(), name='predict'),
     path('history/', UserHistoryView.as_view(), name='history'),
+    
 ]
