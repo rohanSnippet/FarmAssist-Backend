@@ -15,6 +15,11 @@ class UserSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("User already exists")
         return value
     
+    def validate_phone_number(self, value):
+        if value == "":
+            return None
+        return value
+    
     def create(self, validated_data):
         # We use create_user to ensure password hashing happens
         user = User.objects.create_user(**validated_data)
