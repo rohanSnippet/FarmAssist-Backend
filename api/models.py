@@ -32,6 +32,10 @@ class User(AbstractUser):
     photo_url = models.URLField(blank=True, null=True)
     phone_number = models.CharField(max_length=20, unique=True, blank=True, null=True)
     auth_providers = models.JSONField(default=list, blank=True)
+    location_label = models.CharField(max_length=255, blank=True, null=True, help_text="e.g. Mumbai, India")
+    latitude = models.FloatField(blank=True, null=True)
+    longitude = models.FloatField(blank=True, null=True)
+    
     USERNAME_FIELD = 'email'  # Tell Django to use email for login
     REQUIRED_FIELDS = ['first_name']      # Email is required by default, so leave this empty
 
