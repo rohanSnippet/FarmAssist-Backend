@@ -7,6 +7,7 @@ from .models import CropPrediction
 import joblib
 import os
 from django.conf import settings
+import pandas as pd
 
 # Load model logic (same as before)
 MODEL_PATH = os.path.join(settings.BASE_DIR, 'recommendation/ml_models/crop_recommendation_model.pkl')
@@ -37,6 +38,16 @@ class RecommendCropView(APIView):
                 data['ph'],
                 data['rainfall']
             ]]
+            
+            """ input_features = pd.DataFrame([{
+                'nitrogen': data['nitrogen'],
+                'phosphorus': data['phosphorus'],
+                'potassium': data['potassium'],
+                'temperature': data['temperature'],
+                'humidity': data['humidity'],
+                'ph': data['ph'],
+                'rainfall': data['rainfall']
+            }]) """
             
             # 2. Make Prediction
             prediction = ml_model.predict(input_features)
