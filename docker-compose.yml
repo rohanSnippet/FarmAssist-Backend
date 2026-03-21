@@ -1,0 +1,23 @@
+services:
+  db:
+    image: postgres
+    restart: always
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    ports:
+      - 5432:5432
+    environment:
+      - POSTGRES_DB=farmassist
+      - POSTGRES_USER=root
+      - POSTGRES_PASSWORD=root
+      - TZ=Asia/Kolkata
+
+  adminer:
+    image: adminer
+    restart: always
+    ports:
+      - 8080:8080
+
+volumes:
+  postgres_data:
+    
