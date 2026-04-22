@@ -1,5 +1,7 @@
 import json
 import requests
+import datetime
+from datetime import timedelta
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
@@ -12,63 +14,16 @@ from django.conf import settings
 import pandas as pd
 from google import genai
 from google.genai import types
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
+from django.core.cache import cache
+from collections import defaultdict
 
 MODEL_PATH = os.path.join(settings.BASE_DIR, 'recommendation/ml_models/crop_recommendation_model.pkl')
 try:
     ml_model = joblib.load(MODEL_PATH)
 except:
     ml_model = None
-    
-""" class RecommendCropView(APIView):
-    # Ensure only logged-in users can access this
-    permission_classes = [permissions.IsAuthenticated]
-
-    def post(self, request):
-        if ml_model is None:
-            return Response({'error': 'ML Model not loaded'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-
-        serializer = CropPredictionSerializer(data=request.data)
-        
-        if serializer.is_valid():
-            # 1. Prepare data for the ML model
-            data = serializer.validated_data
-            input_features = [[
-                data['nitrogen'],
-                data['phosphorus'],
-                data['potassium'],
-                data['temperature'],
-                data['humidity'],
-                data['ph'],
-                data['rainfall']
-            ]]
-             //put 3 double quoted here
-             input_features = pd.DataFrame([{
-                'nitrogen': data['nitrogen'],
-                'phosphorus': data['phosphorus'],
-                'potassium': data['potassium'],
-                'temperature': data['temperature'],
-                'humidity': data['humidity'],
-                'ph': data['ph'],
-                'rainfall': data['rainfall']
-            }]) //put 3 double quotes here
-            
-            # 2. Make Prediction
-            prediction = ml_model.predict(input_features)
-            result = prediction[0]
-            
-            # 3. Save to Database (History)
-            # We explicitly pass the user and the calculated result
-            CropPrediction.objects.create(
-                user=request.user,
-                predicted_crop=result,
-                **data
-            )
-            
-            return Response({'recommended_crop': result}, status=status.HTTP_200_OK)
-        
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
- """
-
+   
 class RecommendCropView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -128,7 +83,6 @@ class RecommendCropView(APIView):
             }, status=status.HTTP_200_OK)
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
     
 class UserHistoryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -246,4 +200,186 @@ class SoilCardOCRView(APIView):
             return Response(extracted_data, status=200)
 
         except Exception as e:
-            return Response({"error": str(e)}, status=500)
+            return Response({"error": str(e)}, status=500) 
+        
+class MarketForecastView(APIView):
+    permission_classes = [permissions.AllowAny] # Allow all users to see public market data
+
+    def get(self, request):
+        commodity = request.GET.get('commodity', 'Mango')
+        market = request.GET.get('market', 'Kamthi APMC')
+        state = request.GET.get('state', 'Maharashtra')
+        
+        # 1. Check Cache
+        cache_key = f"market_forecast_{state}_{market}_{commodity}".replace(" ", "_")
+        cached_data = cache.get(cache_key)
+        
+        if cached_data:
+            return Response({"source": "redis_cache", "data": cached_data}, status=status.HTTP_200_OK)
+
+        # 2. Fetch Live Data
+        api_key = getattr(settings, 'DATA_GOV_API_KEY', '')
+        url = f"https://api.data.gov.in/resource/35985678-0d79-46b4-9ed6-6f13308a1d24?api-key={api_key}&format=json&filters[Commodity]={commodity}&filters[Market]={market}&filters[State]={state}&limit=30"
+        
+        try:
+            response = requests.get(url, timeout=10)
+            api_data = response.json()
+            records = api_data.get('records', [])
+            
+            if not records:
+                return Response({"error": "No trading data available."}, status=status.HTTP_404_NOT_FOUND)
+
+            # 3. Process Data
+            df = pd.DataFrame(records)
+            df['Arrival_Date'] = pd.to_datetime(df['Arrival_Date'], format='%d/%m/%Y')
+            df = df.sort_values('Arrival_Date')
+            df['Modal_Price'] = pd.to_numeric(df['Modal_Price'])
+
+            # 4. Train ML Model
+            model = ExponentialSmoothing(
+                df['Modal_Price'].values, 
+                trend='add', 
+                seasonal=None, 
+                initialization_method="estimated"
+            )
+            fit_model = model.fit()
+            forecast = fit_model.forecast(14) # Predict 14 days
+            
+            # 5. Format for Recharts
+            chart_data = []
+            last_historical_price = None
+            last_date = df['Arrival_Date'].iloc[-1]
+
+            # Parse Historical
+            for index, row in df.iterrows():
+                last_historical_price = round(row['Modal_Price'])
+                chart_data.append({
+                    "fullDate": row['Arrival_Date'].strftime('%Y-%m-%d'),
+                    "displayDate": row['Arrival_Date'].strftime('%b %d'),
+                    "historicalPrice": last_historical_price,
+                    "forecastPrice": None
+                })
+                
+            # Tie the lines together
+            chart_data[-1]["forecastPrice"] = last_historical_price
+
+            # Parse Forecast
+            for i, pred_price in enumerate(forecast):
+                future_date = last_date + timedelta(days=i+1)
+                chart_data.append({
+                    "fullDate": future_date.strftime('%Y-%m-%d'),
+                    "displayDate": future_date.strftime('%b %d'),
+                    "historicalPrice": None,
+                    "forecastPrice": round(pred_price)
+                })
+
+            # Cache for 12 hours
+            cache.set(cache_key, chart_data, timeout=60 * 60 * 12)
+
+            return Response({"source": "live_api_and_ml", "data": chart_data}, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+
+class TopCropsForecastView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        market = request.GET.get('market', 'Kamthi APMC')
+        state = request.GET.get('state', 'Maharashtra')
+        
+        cache_key = f"market_forecast_v3_{state}_{market}".replace(" ", "_")
+        cached_data = cache.get(cache_key)
+        if cached_data:
+            return Response({"source": "redis_cache", "data": cached_data}, status=status.HTTP_200_OK)
+
+        api_key = getattr(settings, 'DATA_GOV_API_KEY', '')
+        url = f"https://api.data.gov.in/resource/35985678-0d79-46b4-9ed6-6f13308a1d24?api-key={api_key}&format=json&filters[Market]={market}&filters[State]={state}&limit=800"
+        
+        try:
+            response = requests.get(url, timeout=15)
+            records = response.json().get('records', [])
+            if not records:
+                return Response({"error": "No trading data found for this APMC.", "code": "NO_DATA"}, status=status.HTTP_404_NOT_FOUND)
+
+            df = pd.DataFrame(records)
+            df['Arrival_Date'] = pd.to_datetime(df['Arrival_Date'], format='%d/%m/%Y')
+            df['Modal_Price'] = pd.to_numeric(df['Modal_Price'])
+            
+            # Average out duplicate daily entries to prevent 500 crashes
+            df = df.groupby(['Commodity', 'Arrival_Date'])['Modal_Price'].mean().reset_index()
+            
+            # Find crops with enough data points to train an ML model
+            latest_prices = df.groupby('Commodity')['Modal_Price'].mean().sort_values(ascending=False)
+            valid_crops = [crop for crop in latest_prices.index if len(df[df['Commodity'] == crop]) >= 5]
+            
+            if not valid_crops:
+                return Response({"error": "Insufficient historical data to run AI predictions.", "code": "INSUFFICIENT_DATA"}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+            top_5_commodities = valid_crops[:5]
+            global_latest_date = df['Arrival_Date'].max() # The absolute 'Today' anchor
+            
+            master_dict = {}
+
+            for crop in valid_crops:
+                crop_df = df[df['Commodity'] == crop].sort_values('Arrival_Date')
+                
+                # 1. Train AI Model
+                model = ExponentialSmoothing(crop_df['Modal_Price'].values, trend='add', seasonal=None, initialization_method="estimated")
+                fit_model = model.fit()
+                forecast = fit_model.forecast(14) # Predict 14 days out
+                
+                last_known_date = crop_df['Arrival_Date'].iloc[-1]
+                last_known_price = round(crop_df['Modal_Price'].iloc[-1])
+
+                # 2. Map Actual Historical Data
+                for _, row in crop_df.iterrows():
+                    date_key = row['Arrival_Date'].strftime('%Y-%m-%d')
+                    if date_key not in master_dict:
+                        master_dict[date_key] = {"fullDate": date_key, "displayDate": row['Arrival_Date'].strftime('%b %d')}
+                    master_dict[date_key][f"{crop}_History"] = round(row['Modal_Price'])
+
+                # 3. CRITICAL: Forward-Fill to the 'Today' Anchor Line
+                # This prevents the jagged lines you saw in the image.
+                curr_date = last_known_date
+                while curr_date < global_latest_date:
+                    curr_date += timedelta(days=1)
+                    date_key = curr_date.strftime('%Y-%m-%d')
+                    if date_key not in master_dict:
+                        master_dict[date_key] = {"fullDate": date_key, "displayDate": curr_date.strftime('%b %d')}
+                    master_dict[date_key][f"{crop}_History"] = last_known_price # Carry price forward
+
+                # 4. Tie the knot perfectly at 'Today'
+                anchor_key = global_latest_date.strftime('%Y-%m-%d')
+                if anchor_key not in master_dict:
+                    master_dict[anchor_key] = {"fullDate": anchor_key, "displayDate": global_latest_date.strftime('%b %d')}
+                master_dict[anchor_key][f"{crop}_Forecast"] = last_known_price
+
+                # 5. Map Future AI Forecast
+                for i, pred_price in enumerate(forecast):
+                    future_date = global_latest_date + timedelta(days=i+1)
+                    date_key = future_date.strftime('%Y-%m-%d')
+                    if date_key not in master_dict:
+                        master_dict[date_key] = {"fullDate": date_key, "displayDate": future_date.strftime('%b %d')}
+                    master_dict[date_key][f"{crop}_Forecast"] = round(max(0, pred_price))
+
+            # Sort chronologically
+            final_chart_data = sorted(list(master_dict.values()), key=lambda x: x['fullDate'])
+
+            payload = {
+                "top_crops": top_5_commodities,
+                "all_crops": valid_crops,
+                "chart_data": final_chart_data, 
+                "transition_date": global_latest_date.strftime('%b %d')
+            }
+
+            cache.set(cache_key, payload, timeout=60 * 60 * 6)
+            return Response({"source": "live_api_and_ml", "data": payload}, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response({"error": "Failed to process market data.", "details": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+      
+      
+      
+        
