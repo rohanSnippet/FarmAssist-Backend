@@ -138,6 +138,19 @@ DATABASES = {
     )
 }
 
+DATA_GOV_API_KEY = os.environ.get("DATA_GOV_API_KEY");
+
+# backend/settings.py
+CACHES = {
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": "redis://127.0.0.1:6379/1", # Ensure your Docker Redis container is running
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+        }
+    }
+}
+
 AUTH_PASSWORD_VALIDATORS = [
     {
         'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
