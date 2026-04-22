@@ -2,7 +2,7 @@
 from django.contrib import admin
 from django.urls import path, include
 from api.views import CreateUserView, UserDetailView, CustomTokenObtainPairView, FirebaseAuthView, LinkAccountView
-from recommendation.views import RecommendCropView, UserHistoryView, SoilCardOCRView
+from recommendation.views import RecommendCropView, UserHistoryView, SoilCardOCRView, MarketForecastView, TopCropsForecastView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 urlpatterns = [
@@ -18,5 +18,6 @@ urlpatterns = [
     path('predict/', RecommendCropView.as_view(), name='predict'),
     path('history/', UserHistoryView.as_view(), name='history'),
     path('ocr-soil-card/', SoilCardOCRView.as_view(), name='ocr_soil_card'),
-    
+    path('market-forecast/', MarketForecastView.as_view(), name='market_forecast'),
+    path('top-market-forecast/', TopCropsForecastView.as_view(), name='top_market_forecast'),
 ]
