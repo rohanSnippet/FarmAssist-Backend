@@ -1,5 +1,6 @@
 from django.contrib.auth.models import AbstractUser, BaseUserManager
-from django.db import models
+from django.contrib.gis.db import models
+from django.conf import settings
 
 class UserManager(BaseUserManager):
     def create_user(self, email, password=None, **extra_fields):
@@ -44,3 +45,34 @@ class User(AbstractUser):
     def __str__(self):
         return self.email
     
+class Farm(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='farms')
+    name = models.CharField(max_length=255)
+    crop_type = models.CharField(max_length=100)
+    
+    # The PolygonField stores the exact boundaries drawn by the farmer on the React frontend
+    boundaries = models.PolygonField()
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.name} - {self.crop_type}"
+
+class PestReport(models.Model):
+    farm = models.ForeignKey(Farm, on_delete=models.CASCADE, related_name='pest_reports')
+    pest_name = models.CharField(max_length=255)
+    description = models.TextField(blank=True, null=True)
+    
+    # A PointField to store the exact coordinate where the pest was spotted
+    detection_location = models.PointField()
+    
+    # Track the environmental context at the time of reporting
+    temperature_at_report = models.FloatField(null=True, blank=True)
+    humidity_at_report = models.FloatField(null=True, blank=True)
+    
+    reported_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.pest_name} detected at {self.farm.name}"
+
+
