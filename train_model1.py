@@ -1,69 +1,60 @@
 import pandas as pd
 import joblib
-from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, classification_report
-import warnings
-
-# Suppress warnings for cleaner output
-warnings.filterwarnings('ignore')
-
-print("🌱 Starting Crop Intelligence Training Process...")
+from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
 
 # 1. Load Data
-try:
-    df = pd.read_csv('Crop_recommendation.csv')
-    print(f"✅ Successfully loaded dataset with {len(df)} records.")
-except FileNotFoundError:
-    print("❌ Error: Crop_recommendation.csv not found in the current directory.")
-    exit()
+print("Loading data...")
+df = pd.read_csv('Crop_recommendation.csv')
 
 # 2. Prepare Features and Target
-# Ensure column names match exactly what you send from Django!
 X = df.drop('label', axis=1)
 y = df['label']
 
-# 3. Split Data (Keep 20% completely unseen for the final test)
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+# 3. Split Data
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# 4. Define the Hyperparameter Grid
-# This tests different structural combinations to find the smartest possible model
-param_grid = {
-    'n_estimators': [100, 200, 300],      # Number of decision trees
-    'max_depth': [None, 15, 25],          # How deep the trees can think
-    'min_samples_split': [2, 5],          # Strictness for splitting rules
-    'class_weight': ['balanced', None]    # Helps if some crops have fewer examples
-}
+# 4. Train Model
+print("Training model...")
+# UPGRADE: Added class_weight='balanced' to penalize the model for ignoring minority crops
+rf_model = RandomForestClassifier(n_estimators=200, random_state=42, class_weight='balanced', n_jobs=-1)
+rf_model.fit(X_train, y_train)
 
-# 5. Run Grid Search (The AI finding the best settings for the AI)
-print("🔍 Running Grid Search to find optimal hyperparameters (this may take a minute)...")
-base_rf = RandomForestClassifier(random_state=42)
-grid_search = GridSearchCV(estimator=base_rf, param_grid=param_grid, cv=5, n_jobs=-1, verbose=1)
-grid_search.fit(X_train, y_train)
+# 5. Evaluate
+print("Evaluating model...")
+y_pred = rf_model.predict(X_test)
+print(f"\nOverall Accuracy: {accuracy_score(y_test, y_pred) * 100:.2f}%\n")
 
-# Extract the champion model
-best_model = grid_search.best_estimator_
-print(f"🏆 Best Parameters Found: {grid_search.best_params_}")
+# UPGRADE: Print the detailed report (Precision, Recall, F1-Score)
+print("Classification Report:")
+print(classification_report(y_test, y_pred))
 
-# 6. Rigorous Cross-Validation
-# Test the champion model 5 separate times on different cuts of the data
-print("\n🔄 Running 5-Fold Cross Validation for true accuracy...")
-cv_scores = cross_val_score(best_model, X, y, cv=5)
-print(f"📊 True Average Accuracy: {cv_scores.mean() * 100:.2f}% (+/- {cv_scores.std() * 100:.2f}%)")
+# 6. Diagnostics: Feature Importance
+# This is crucial for explaining WHY the model made a decision
+feature_importances = pd.Series(rf_model.feature_importances_, index=X.columns).sort_values(ascending=False)
+print("\nFeature Importances:")
+print(feature_importances)
 
-# 7. Final Holdout Evaluation
-print("\n🎯 Evaluating on unseen test data...")
-y_pred = best_model.predict(X_test)
-final_accuracy = accuracy_score(y_test, y_pred)
-print(f"✨ Final Test Accuracy: {final_accuracy * 100:.2f}%")
+# 7. Diagnostics: Confusion Matrix Heatmap
+print("\nGenerating Confusion Matrix...")
+crop_labels = rf_model.classes_
+cm = confusion_matrix(y_test, y_pred, labels=crop_labels)
 
-# (Optional) Print detailed report to see if specific crops are struggling
-# print("\nDetailed Crop Report:")
-# print(classification_report(y_test, y_pred))
+plt.figure(figsize=(14, 12))
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=crop_labels, yticklabels=crop_labels)
+plt.xlabel('Predicted Crop')
+plt.ylabel('Actual Crop')
+plt.title('FarmAssist Crop Recommendation - Confusion Matrix')
+plt.xticks(rotation=45)
+plt.tight_layout()
+# Save the plot so you have it for your project documentation
+# plt.savefig('recommendation/ml_models/confusion_matrix.png') 
+plt.show()
 
-# 8. Save the Champion Model
-# Using compress=3 makes the .pkl file smaller and load faster in Django
-model_path = 'recommendation/ml_models/crop_recommendation_model1.pkl'
-joblib.dump(best_model, model_path, compress=3)
-print(f"\n💾 Model successfully saved to: {model_path}")
-print("🚀 Ready for deployment!")
+# 8. Save the Model
+print("\nSaving model...")
+joblib.dump(rf_model, 'recommendation/ml_models/crop_recommendation_model1.pkl')
+print("Pipeline complete.")
