@@ -23,6 +23,30 @@ try:
     ml_model = joblib.load(MODEL_PATH)
 except:
     ml_model = None
+    
+def normalize_soil_data(raw_n, raw_p, raw_k, raw_rainfall):
+    # Absolute maximums derived from Crop_recommendation.csv
+    DATASET_MAX_N = 140.0
+    DATASET_MAX_P = 145.0
+    DATASET_MAX_K = 205.0
+    DATASET_MAX_RAIN = 298.5
+    
+    # 1. Cap NPK values to prevent Out-Of-Distribution (OOD) errors.
+    # If a soil card says 305 N, the model will safely receive 140 (which it knows means "High N").
+    norm_n = min(float(raw_n), DATASET_MAX_N)
+    norm_p = min(float(raw_p), DATASET_MAX_P)
+    norm_k = min(float(raw_k), DATASET_MAX_K)
+    
+    # 2. Rainfall Safety Net
+    # If the API or user provides total annual rainfall (e.g., 1200mm), 
+    # we approximate the monthly average by dividing by 4 (approx growing season length).
+    norm_rainfall = float(raw_rainfall)
+    if norm_rainfall > DATASET_MAX_RAIN:
+        norm_rainfall = norm_rainfall / 4.0
+        # If it's still too high, cap it at the model's absolute limit
+        norm_rainfall = min(norm_rainfall, DATASET_MAX_RAIN)
+        
+    return norm_n, norm_p, norm_k, norm_rainfall
    
 class RecommendCropView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -36,15 +60,19 @@ class RecommendCropView(APIView):
         if serializer.is_valid():
             data = serializer.validated_data
             
+            safe_n, safe_p, safe_k, safe_rain = normalize_soil_data(
+            data['nitrogen'], data['phosphorus'], data['potassium'], data['rainfall']
+            )
+            
             input_features = pd.DataFrame([{
-                'N': data['nitrogen'],
-                'P': data['phosphorus'],
-                'K': data['potassium'],
+                'N': safe_n,
+                'P': safe_p,
+                'K': safe_k,
                 'temperature': data['temperature'],
                 'humidity': data['humidity'],
                 'ph': data['ph'],
-                'rainfall': data['rainfall']
-            }])
+                'rainfall': safe_rain
+            }]).astype(dtype='float64')
             
             # --- NEW PROBABILITY LOGIC ---
             # 1. Get the probabilities for all crops
