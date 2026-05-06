@@ -21,7 +21,7 @@
   </li>
 </ol>
 
-<h3>Run database services using Docker (recommended)</h3>
+<h3>Run database services using Docker </h3>
 
 <ol>
   <li>Make sure <strong>Docker dekstop</strong> and <strong>Docker Compose</strong> are installed & Docker Engine is running.</li>
