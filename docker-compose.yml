@@ -1,23 +1,24 @@
 services:
   db:
-    image: postgres
+    image: postgis/postgis:16-3.4
+    container_name: farmassist-db
     restart: always
-    volumes:
-      - postgres_data:/var/lib/postgresql
-    ports:
-      - 5432:5432
     environment:
-      - POSTGRES_DB=farmassist
-      - POSTGRES_USER=root
-      - POSTGRES_PASSWORD=root
-      - TZ=Asia/Kolkata
+      POSTGRES_DB: farmassist
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: root
+      TZ: Asia/Kolkata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
 
   adminer:
     image: adminer
+    container_name: farmassist-adminer
     restart: always
     ports:
-      - 8080:8080
+      - "8080:8080"
 
 volumes:
   postgres_data:
-    
