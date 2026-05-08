@@ -1,6 +1,8 @@
 # api/serializers.py
 from rest_framework import serializers
-from .models import User
+from .models import User, Farm, FarmSeason, PestDetection, PestAlert
+from django.contrib.gis.geos import GEOSGeometry
+import json
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 class UserSerializer(serializers.ModelSerializer):
@@ -51,3 +53,48 @@ class UpdateProfileSerializer(serializers.Serializer):
         if User.objects.filter(email=value).exists():
             raise serializers.ValidationError("This email is already associated with another account.")
         return value
+    
+# Pest control 
+    
+class FarmSeasonSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FarmSeason
+        fields = ['id', 'crop_name', 'planted_date', 'expected_harvest_date', 'is_active']
+
+class FarmSerializer(serializers.ModelSerializer):
+    seasons = FarmSeasonSerializer(many=True, read_only=True)
+    class Meta:
+        model = Farm
+        fields = ['id', 'name', 'boundaries', 'created_at', 'seasons']
+
+    def to_internal_value(self, data):
+        internal_data = super().to_internal_value(data)
+        if 'boundaries' in data:
+            boundaries_str = data.get('boundaries')
+            if isinstance(boundaries_str, dict):
+                boundaries_str = json.dumps(boundaries_str)
+            internal_data['boundaries'] = GEOSGeometry(boundaries_str)
+        return internal_data
+
+class PestDetectionSerializer(serializers.ModelSerializer):
+    farm_id = serializers.IntegerField(write_only=True)
+
+    class Meta:
+        model = PestDetection
+        fields = ['id', 'farm_id', 'farm_season', 'pest_name', 'severity_level', 'detection_location', 'image']
+        read_only_fields = ['farm_season']
+
+    # --- ADD THIS METHOD ---
+    def create(self, validated_data):
+        # Remove 'farm_id' from the dictionary before sending it to the database
+        validated_data.pop('farm_id', None)
+        
+        # Now pass the cleaned data to the standard Django creation process
+        return super().create(validated_data)
+
+class PestAlertSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PestAlert
+        fields = '__all__'
+
+
