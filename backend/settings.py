@@ -136,6 +136,7 @@ DATABASES = {
     'default': dj_database_url.config(
         conn_max_age=600,
         ssl_require=not os.getenv("DEBUG", "False") == "True",
+        engine='django.contrib.gis.db.backends.postgis'
     )
 }
 
@@ -207,3 +208,24 @@ FIREBASE_CREDENTIALS = os.environ.get('FIREBASE_CREDENTIALS', os.path.join(BASE_
 
 # Add this at the bottom of backend/settings.py
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
+
+# Celery Configuration
+# Using database 2 to keep task queues separate from your default cache (which uses database 1)
+CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://127.0.0.1:6379/2')
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = TIME_ZONE
+
+# Windows-specific GDAL settings (Updated for Python 3.8+)
+if os.name == 'nt':
+    # 1. Explicitly whitelist the OSGeo4W folder for secure DLL loading
+    if hasattr(os, 'add_dll_directory'):
+        os.add_dll_directory(r'C:\Users\rohan\AppData\Local\Programs\OSGeo4W\bin')
+    
+    # 2. Set the paths
+    os.environ['PATH'] = r'C:\Users\rohan\AppData\Local\Programs\OSGeo4W\bin;' + os.environ.get('PATH', '')
+    
+    # 3. Point directly to the binaries
+    GDAL_LIBRARY_PATH = r'C:\Users\rohan\AppData\Local\Programs\OSGeo4W\bin\gdal312.dll'
+    GEOS_LIBRARY_PATH = r'C:\Users\rohan\AppData\Local\Programs\OSGeo4W\bin\geos_c.dll'
