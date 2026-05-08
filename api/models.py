@@ -48,31 +48,40 @@ class User(AbstractUser):
 class Farm(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='farms')
     name = models.CharField(max_length=255)
-    crop_type = models.CharField(max_length=100)
-    
-    # The PolygonField stores the exact boundaries drawn by the farmer on the React frontend
+    # Stores exact boundaries drawn by the farmer
     boundaries = models.PolygonField()
-    
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"{self.name} - {self.crop_type}"
+        return self.name
 
-class PestReport(models.Model):
-    farm = models.ForeignKey(Farm, on_delete=models.CASCADE, related_name='pest_reports')
+class FarmSeason(models.Model):
+    farm = models.ForeignKey(Farm, on_delete=models.CASCADE, related_name='seasons')
+    crop_name = models.CharField(max_length=100)
+    planted_date = models.DateField(auto_now_add=True)
+    expected_harvest_date = models.DateField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+
+class PestDetection(models.Model):
+    farm_season = models.ForeignKey(FarmSeason, on_delete=models.CASCADE, related_name='detections')
     pest_name = models.CharField(max_length=255)
-    description = models.TextField(blank=True, null=True)
-    
-    # A PointField to store the exact coordinate where the pest was spotted
+    severity_level = models.IntegerField(default=1)
+    image_url = models.URLField(blank=True, null=True)
     detection_location = models.PointField()
-    
-    # Track the environmental context at the time of reporting
-    temperature_at_report = models.FloatField(null=True, blank=True)
-    humidity_at_report = models.FloatField(null=True, blank=True)
-    
-    reported_at = models.DateTimeField(auto_now_add=True)
+    weather_snapshot = models.JSONField(default=dict, blank=True)
+    timestamp = models.DateTimeField(auto_now_add=True)
+    image = models.ImageField(upload_to='pest_scans/', null=True, blank=True)
 
-    def __str__(self):
-        return f"{self.pest_name} detected at {self.farm.name}"
+class PestAlert(models.Model):
+    source_detection = models.ForeignKey(PestDetection, on_delete=models.CASCADE, related_name='generated_alerts')
+    target_farm = models.ForeignKey(Farm, on_delete=models.CASCADE, related_name='received_alerts')
+    risk_score = models.FloatField()
+    is_read = models.BooleanField(default=False)
+    timestamp = models.DateTimeField(auto_now_add=True)
 
+class CommunityPost(models.Model):
+    related_detection = models.ForeignKey(PestDetection, on_delete=models.CASCADE, related_name='community_posts')
+    author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    content = models.TextField()
+    timestamp = models.DateTimeField(auto_now_add=True)
 
