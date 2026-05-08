@@ -1,17 +1,25 @@
 from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated, AllowAny
-from .models import User
-from .serializers import UserSerializer, CustomTokenObtainPairSerializer, UpdateProfileSerializer
+from .models import User, Farm, FarmSeason, PestDetection, PestAlert
+from .serializers import UserSerializer, CustomTokenObtainPairSerializer, UpdateProfileSerializer, FarmSerializer,FarmSeasonSerializer, PestDetectionSerializer, PestAlertSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.views import APIView
 import firebase_admin
+from rest_framework.decorators import action
 from firebase_admin import auth, credentials
 from rest_framework.response import Response
-import os
+import os, time
 from django.utils.timezone import now
 import json
 from django.conf import settings
+from rest_framework import viewsets, status
+from .tasks import calculate_pest_spread
+from rest_framework.exceptions import ValidationError
+from django.shortcuts import get_object_or_404
+from rest_framework.parsers import FormParser, MultiPartParser
+from django.contrib.gis.geos import Point
+from .ai_engine import analyze_crop_image
 
 
 if not firebase_admin._apps:
@@ -275,3 +283,131 @@ class LinkAccountView(APIView):
             })
         
         return Response(serializer.errors, status=400)
+    
+    
+# Pest control
+
+class FarmViewSet(viewsets.ModelViewSet):
+    serializer_class = FarmSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Farm.objects.filter(user=self.request.user)
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+class FarmSeasonViewSet(viewsets.ModelViewSet):
+    serializer_class = FarmSeasonSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        # Security: Only return seasons for farms owned by the logged-in user
+        return FarmSeason.objects.filter(farm__user=self.request.user)
+
+    def perform_create(self, serializer):
+        # 1. Manually extract the farm ID sent from the React frontend
+        farm_id = self.request.data.get('farm')
+        
+        if not farm_id:
+            raise ValidationError({"farm": "You must provide a farm ID to plant a crop."})
+
+        # 2. Security Check: Ensure the farm exists AND the logged-in user owns it
+        try:
+            farm_instance = Farm.objects.get(id=farm_id, user=self.request.user)
+        except Farm.DoesNotExist:
+            raise ValidationError({"farm": "Invalid farm ID or you do not have permission."})
+
+        # 3. Forcefully inject the verified farm instance into the save method
+        new_season = serializer.save(farm=farm_instance)
+        
+        # 4. Smart Cleanup: Deactivate all OTHER seasons for this specific farm
+        FarmSeason.objects.filter(
+            farm=farm_instance, 
+            is_active=True
+        ).exclude(id=new_season.id).update(is_active=False)
+
+class PestDetectionViewSet(viewsets.ModelViewSet):
+    serializer_class = PestDetectionSerializer
+    parser_classes = [MultiPartParser, FormParser]
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return PestDetection.objects.filter(farm_season__farm__user=self.request.user)
+
+   # ---------------------------------------------------------
+    # 1. THE AI SCANNER ENDPOINT (/api/detections/scan/)
+    # ---------------------------------------------------------
+    @action(detail=False, methods=['post'])
+    def scan(self, request):
+        image_file = request.FILES.get('image')
+        
+        if not image_file:
+            raise ValidationError({"image": "Please upload an image of the crop."})
+
+        try:
+            # 1. Pass the image to the Gemini Vision Engine
+            ai_result = analyze_crop_image(image_file)
+            
+            # 2. CRITICAL: Reset the file pointer! 
+            # Because Gemini read the file bytes, the pointer is at the end of the file. 
+            # We must reset it to 0 so your "Smart Saver" can save it to Postgres later.
+            image_file.seek(0) 
+
+            return Response(ai_result, status=status.HTTP_200_OK)
+            
+        except ValueError as e:
+            # This catches our custom errors (like missing JSON keys)
+            raise ValidationError({"image": str(e)})
+        except Exception as e:
+            # Catch-all for unexpected API failures
+            print(f"Scan API Error: {e}")
+            return Response(
+                {"error": "AI processing failed. Please try again."}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    # ---------------------------------------------------------
+    # 2. THE SMART SAVER (Triggered on POST /api/detections/)
+    # ---------------------------------------------------------
+    def perform_create(self, serializer):
+        farm_id = self.request.data.get('farm_id')
+        
+        # 1. Verify the farm exists and belongs to the user
+        try:
+            farm = Farm.objects.get(id=farm_id, user=self.request.user)
+        except Farm.DoesNotExist:
+            raise ValidationError({"farm_id": "Invalid Farm ID."})
+
+        # 2. Find the ACTIVE crop season for this farm
+        active_season = FarmSeason.objects.filter(farm=farm, is_active=True).first()
+        if not active_season:
+            raise ValidationError({"farm_id": "You must plant a crop on this land before logging a pest."})
+
+        # 3. Parse the GeoJSON location sent from React
+        location_data = self.request.data.get('detection_location')
+        # If no GPS was available, default to the center of their farm
+        if not location_data:
+            detection_point = farm.boundaries.centroid
+        else:
+            # Assuming React sends standard GeoJSON string or dict
+            import json
+            loc_dict = json.loads(location_data) if isinstance(location_data, str) else location_data
+            coords = loc_dict.get('coordinates')
+            detection_point = Point(coords[0], coords[1], srid=4326)
+
+        # 4. Save the record, link the active season, and trigger Celery!
+        detection = serializer.save(
+            farm_season=active_season,
+            detection_location=detection_point
+        )
+        
+        # TODO: Trigger your Celery task here!
+        # process_pest_alert.delay(detection.id)
+
+class PestAlertViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = PestAlertSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return PestAlert.objects.filter(target_farm__user=self.request.user).order_by('-timestamp')
