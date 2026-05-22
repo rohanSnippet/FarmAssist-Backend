@@ -11,8 +11,9 @@ from api.views import (
     LinkAccountView, 
     FarmViewSet, 
     FarmSeasonViewSet,
-    PestAlertViewSet, 
-    PestDetectionViewSet
+    PestAlertBroadcastViewSet, 
+    PestDetectionViewSet,
+    CommunityPostViewSet
 )
 
 from recommendation.views import (
@@ -29,8 +30,9 @@ from rest_framework_simplejwt.views import TokenRefreshView
 router = DefaultRouter()
 router.register(r'farms', FarmViewSet, basename='farm')
 router.register(r'detections', PestDetectionViewSet, basename='detection')
-router.register(r'alerts', PestAlertViewSet, basename='alert')
+router.register(r'alerts', PestAlertBroadcastViewSet, basename='alert')
 router.register(r'seasons', FarmSeasonViewSet, basename='season')
+router.register(r'community-posts', CommunityPostViewSet, basename='community-post')
 
 urlpatterns = [
     path('admin/', admin.site.urls),
