@@ -1,7 +1,7 @@
 from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated, AllowAny
-from .models import User, Farm, FarmSeason, PestDetection, PestAlert
-from .serializers import UserSerializer, CustomTokenObtainPairSerializer, UpdateProfileSerializer, FarmSerializer,FarmSeasonSerializer, PestDetectionSerializer, PestAlertSerializer
+from .models import User, Farm, FarmSeason, PestDetection, PestAlertBroadcast, CommunityPost
+from .serializers import UserSerializer, CustomTokenObtainPairSerializer, UpdateProfileSerializer, FarmSerializer,FarmSeasonSerializer, PestDetectionSerializer, PestAlertBroadcastSerializer, CommunityPostSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.views import APIView
@@ -20,6 +20,7 @@ from django.shortcuts import get_object_or_404
 from rest_framework.parsers import FormParser, MultiPartParser
 from django.contrib.gis.geos import Point
 from .ai_engine import analyze_crop_image
+from .tasks import calculate_pest_spread
 
 
 if not firebase_admin._apps:
@@ -384,30 +385,61 @@ class PestDetectionViewSet(viewsets.ModelViewSet):
         if not active_season:
             raise ValidationError({"farm_id": "You must plant a crop on this land before logging a pest."})
 
-        # 3. Parse the GeoJSON location sent from React
-        location_data = self.request.data.get('detection_location')
-        # If no GPS was available, default to the center of their farm
-        if not location_data:
-            detection_point = farm.boundaries.centroid
-        else:
-            # Assuming React sends standard GeoJSON string or dict
-            import json
-            loc_dict = json.loads(location_data) if isinstance(location_data, str) else location_data
-            coords = loc_dict.get('coordinates')
-            detection_point = Point(coords[0], coords[1], srid=4326)
+        # 3. MAGIC FIX: Ignore device GPS entirely. 
+        # Force the detection point to be the exact mathematical center of the Farm's polygon.
+        detection_point = farm.boundaries.centroid
 
-        # 4. Save the record, link the active season, and trigger Celery!
+        # 4. Save the record
         detection = serializer.save(
             farm_season=active_season,
             detection_location=detection_point
         )
         
-        # TODO: Trigger your Celery task here!
-        # process_pest_alert.delay(detection.id)
+        # 5. Trigger the Celery Broadcast Task
+        calculate_pest_spread.delay(detection.id)
+    
+# In api/views.py
 
-class PestAlertViewSet(viewsets.ReadOnlyModelViewSet):
-    serializer_class = PestAlertSerializer
+class PestAlertBroadcastViewSet(viewsets.ModelViewSet):
+    # Ensure you create a simple serializer for PestAlertBroadcast in serializers.py
+    serializer_class = PestAlertBroadcastSerializer 
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return PestAlert.objects.filter(target_farm__user=self.request.user).order_by('-timestamp')
+        user_id = self.request.user.id
+        
+        # MAGIC: Find broadcasts where 'notified_users' contains my ID, 
+        # BUT 'dismissed_by' DOES NOT contain my ID.
+        return PestAlertBroadcast.objects.filter(
+            notified_users__contains=user_id
+        ).exclude(
+            dismissed_by__contains=user_id
+        ).order_by('-timestamp')
+
+    # Custom logic to handle the "Dismiss" click
+    def partial_update(self, request, *args, **kwargs):
+        alert = self.get_object()
+        user_id = request.user.id
+        
+        # Add the user to the dismissed list and save
+        if user_id not in alert.dismissed_by:
+            alert.dismissed_by.append(user_id)
+            alert.save(update_fields=['dismissed_by'])
+            
+        return Response({"status": "dismissed successfully"})
+    
+class CommunityPostViewSet(viewsets.ModelViewSet):
+    serializer_class = CommunityPostSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        # Order by newest first
+        return CommunityPost.objects.all().select_related('author', 'related_detection').order_by('-timestamp')
+
+    def perform_create(self, serializer):
+        # Automatically attach the logged-in user as the author
+        serializer.save(author=self.request.user)
+    
+    
+    
+    

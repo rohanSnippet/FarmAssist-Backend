@@ -49,7 +49,7 @@ class Farm(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='farms')
     name = models.CharField(max_length=255)
     # Stores exact boundaries drawn by the farmer
-    boundaries = models.PolygonField()
+    boundaries = models.PolygonField(geography=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
@@ -67,16 +67,19 @@ class PestDetection(models.Model):
     pest_name = models.CharField(max_length=255)
     severity_level = models.IntegerField(default=1)
     image_url = models.URLField(blank=True, null=True)
-    detection_location = models.PointField()
+    detection_location = models.PointField(geography=True)
     weather_snapshot = models.JSONField(default=dict, blank=True)
     timestamp = models.DateTimeField(auto_now_add=True)
     image = models.ImageField(upload_to='pest_scans/', null=True, blank=True)
 
-class PestAlert(models.Model):
-    source_detection = models.ForeignKey(PestDetection, on_delete=models.CASCADE, related_name='generated_alerts')
-    target_farm = models.ForeignKey(Farm, on_delete=models.CASCADE, related_name='received_alerts')
-    risk_score = models.FloatField()
-    is_read = models.BooleanField(default=False)
+class PestAlertBroadcast(models.Model):
+    source_detection = models.ForeignKey(PestDetection, on_delete=models.CASCADE, related_name='broadcasts')
+    max_risk_score = models.FloatField()
+    
+    # The "Compressed Copies": Simple JSON arrays storing User IDs
+    notified_users = models.JSONField(default=list)  # e.g., [1, 44, 89]
+    dismissed_by = models.JSONField(default=list)    # e.g., [44] (User 44 swiped it away)
+    
     timestamp = models.DateTimeField(auto_now_add=True)
 
 class CommunityPost(models.Model):

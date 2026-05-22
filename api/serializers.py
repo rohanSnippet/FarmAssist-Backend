@@ -1,6 +1,6 @@
 # api/serializers.py
 from rest_framework import serializers
-from .models import User, Farm, FarmSeason, PestDetection, PestAlert
+from .models import User, Farm, FarmSeason, PestDetection, PestAlertBroadcast, CommunityPost
 from django.contrib.gis.geos import GEOSGeometry
 import json
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
@@ -76,15 +76,18 @@ class FarmSerializer(serializers.ModelSerializer):
             internal_data['boundaries'] = GEOSGeometry(boundaries_str)
         return internal_data
 
+# In api/serializers.py
+
 class PestDetectionSerializer(serializers.ModelSerializer):
     farm_id = serializers.IntegerField(write_only=True)
 
     class Meta:
         model = PestDetection
         fields = ['id', 'farm_id', 'farm_season', 'pest_name', 'severity_level', 'detection_location', 'image']
-        read_only_fields = ['farm_season']
+        
+        # MAGIC FIX: Add 'detection_location' here so the serializer stops demanding it from the frontend
+        read_only_fields = ['farm_season', 'detection_location']
 
-    # --- ADD THIS METHOD ---
     def create(self, validated_data):
         # Remove 'farm_id' from the dictionary before sending it to the database
         validated_data.pop('farm_id', None)
@@ -92,9 +95,33 @@ class PestDetectionSerializer(serializers.ModelSerializer):
         # Now pass the cleaned data to the standard Django creation process
         return super().create(validated_data)
 
-class PestAlertSerializer(serializers.ModelSerializer):
+class PestAlertBroadcastSerializer(serializers.ModelSerializer):
+    # Pull data from the related PestDetection model for the frontend
+    pest_name = serializers.CharField(source='source_detection.pest_name', read_only=True)
+    severity = serializers.IntegerField(source='source_detection.severity_level', read_only=True)
+    created_at = serializers.DateTimeField(source='timestamp', read_only=True)
+
     class Meta:
-        model = PestAlert
-        fields = '__all__'
+        model = PestAlertBroadcast
+        # Notice we DO NOT include 'notified_users' or 'dismissed_by'. 
+        # The frontend doesn't need to download huge arrays of user IDs!
+        fields = ['id', 'pest_name', 'severity', 'max_risk_score', 'created_at']
+        
+class CommunityPostSerializer(serializers.ModelSerializer):
+    author_name = serializers.SerializerMethodField()
+    author_avatar = serializers.URLField(source='author.photo_url', read_only=True)
+    pest_name = serializers.CharField(source='related_detection.pest_name', read_only=True)
+    severity = serializers.IntegerField(source='related_detection.severity_level', read_only=True)
+    detection_image = serializers.URLField(source='related_detection.image_url', read_only=True)
+
+    class Meta:
+        model = CommunityPost
+        fields = ['id', 'author_name', 'author_avatar', 'content', 'timestamp', 
+                  'pest_name', 'severity', 'detection_image', 'related_detection']
+        read_only_fields = ['author']
+
+    def get_author_name(self, obj):
+        return f"{obj.author.first_name} {obj.author.last_name}".strip() or "Anonymous Farmer"
+
 
 
