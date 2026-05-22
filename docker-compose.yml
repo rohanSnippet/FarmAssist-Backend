@@ -20,5 +20,17 @@ services:
     ports:
       - "8080:8080"
 
+  redis:
+    image: redis:7-alpine
+    container_name: cinephiles-redis
+    ports:
+      - "6379:6379"
+    # Optional: Saves data to disk every 60 seconds if at least 1 key changed
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
 volumes:
   postgres_data:
+  redis_data:
