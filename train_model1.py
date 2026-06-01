@@ -56,5 +56,5 @@ plt.show()
 
 # 8. Save the Model
 print("\nSaving model...")
-joblib.dump(rf_model, 'recommendation/ml_models/crop_recommendation_model1.pkl')
+joblib.dump(rf_model, 'recommendation/ml_models/crop_recommendation_model2.pkl')
 print("Pipeline complete.")
