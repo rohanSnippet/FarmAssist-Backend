@@ -1,7 +1,10 @@
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.contrib.gis.db import models
+import io, sys
+from django.core.files.uploadedfile import InMemoryUploadedFile
 from django.conf import settings
 
+# User
 class UserManager(BaseUserManager):
     def create_user(self, email, password=None, **extra_fields):
         if not email:
@@ -45,6 +48,7 @@ class User(AbstractUser):
     def __str__(self):
         return self.email
     
+# Farm Creation
 class Farm(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='farms')
     name = models.CharField(max_length=255)
@@ -62,6 +66,7 @@ class FarmSeason(models.Model):
     expected_harvest_date = models.DateField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
 
+#Pest Detection
 class PestDetection(models.Model):
     farm_season = models.ForeignKey(FarmSeason, on_delete=models.CASCADE, related_name='detections')
     pest_name = models.CharField(max_length=255)
@@ -70,7 +75,6 @@ class PestDetection(models.Model):
     detection_location = models.PointField(geography=True)
     weather_snapshot = models.JSONField(default=dict, blank=True)
     timestamp = models.DateTimeField(auto_now_add=True)
-    image = models.ImageField(upload_to='pest_scans/', null=True, blank=True)
 
 class PestAlertBroadcast(models.Model):
     source_detection = models.ForeignKey(PestDetection, on_delete=models.CASCADE, related_name='broadcasts')
@@ -82,9 +86,26 @@ class PestAlertBroadcast(models.Model):
     
     timestamp = models.DateTimeField(auto_now_add=True)
 
-class CommunityPost(models.Model):
-    related_detection = models.ForeignKey(PestDetection, on_delete=models.CASCADE, related_name='community_posts')
+class Post(models.Model):
+    CATEGORIES = [
+        ('Crops', 'Crops'), ('Schemes', 'Schemes'), 
+        ('Market', 'Market'), ('Weather', 'Weather')
+    ]
+    
     author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     content = models.TextField()
-    timestamp = models.DateTimeField(auto_now_add=True)
+    
+    # Auto-translated fields
+    content_hi = models.TextField(blank=True, null=True) # Hindi
+    content_mr = models.TextField(blank=True, null=True) # Marathi
+    
+    category = models.CharField(max_length=50, choices=CATEGORIES, default='Crops')
+    
+    # Stores the Cloudinary string URL sent from React
+    image_url = models.URLField(max_length=1000, blank=True, null=True)
+    
+    likes_count = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        ordering = ['-created_at']

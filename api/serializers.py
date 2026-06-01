@@ -1,6 +1,6 @@
 # api/serializers.py
 from rest_framework import serializers
-from .models import User, Farm, FarmSeason, PestDetection, PestAlertBroadcast, CommunityPost
+from .models import User, Farm, FarmSeason, PestDetection, PestAlertBroadcast, Post
 from django.contrib.gis.geos import GEOSGeometry
 import json
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
@@ -107,21 +107,44 @@ class PestAlertBroadcastSerializer(serializers.ModelSerializer):
         # The frontend doesn't need to download huge arrays of user IDs!
         fields = ['id', 'pest_name', 'severity', 'max_risk_score', 'created_at']
         
-class CommunityPostSerializer(serializers.ModelSerializer):
+class PostSerializer(serializers.ModelSerializer):
     author_name = serializers.SerializerMethodField()
-    author_avatar = serializers.URLField(source='author.photo_url', read_only=True)
-    pest_name = serializers.CharField(source='related_detection.pest_name', read_only=True)
-    severity = serializers.IntegerField(source='related_detection.severity_level', read_only=True)
-    detection_image = serializers.URLField(source='related_detection.image_url', read_only=True)
-
+    author_initials = serializers.SerializerMethodField()
+    
     class Meta:
-        model = CommunityPost
-        fields = ['id', 'author_name', 'author_avatar', 'content', 'timestamp', 
-                  'pest_name', 'severity', 'detection_image', 'related_detection']
-        read_only_fields = ['author']
+        model = Post
+        fields = [
+            'id', 'author', 'author_name', 'author_initials', 
+            'content', 'content_hi', 'content_mr', 'category', 
+            'image_url', 'likes_count', 'created_at'
+        ]
+        read_only_fields = ['author', 'likes_count', 'content_hi', 'content_mr', 'created_at']
 
     def get_author_name(self, obj):
-        return f"{obj.author.first_name} {obj.author.last_name}".strip() or "Anonymous Farmer"
+        """Returns the full name of the author, falling back to username if names aren't set."""
+        if obj.author.first_name or obj.author.last_name:
+            return f"{obj.author.first_name} {obj.author.last_name}".strip()
+        return obj.author.username
 
+    def get_author_initials(self, obj):
+        """Generates the 1 or 2 letter initials for the frontend avatar."""
+        name = self.get_author_name(obj)
+        parts = name.split()
+        
+        if len(parts) >= 2:
+            return f"{parts[0][0]}{parts[-1][0]}".upper()
+        elif len(parts) == 1 and len(parts[0]) > 0:
+            return f"{parts[0][0]}".upper()
+        return "U" # Default fallback
+        
+    def create(self, validated_data):
+        """
+        Automatically assigns the logged-in user making the request 
+        as the author of the post.
+        """
+        request = self.context.get('request')
+        if request and hasattr(request, 'user'):
+            validated_data['author'] = request.user
+        return super().create(validated_data)
 
 
