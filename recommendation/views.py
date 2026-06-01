@@ -17,8 +17,9 @@ from google.genai import types
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 from django.core.cache import cache
 from collections import defaultdict
+from .crop_registry import get_allowed_crops
 
-MODEL_PATH = os.path.join(settings.BASE_DIR, 'recommendation/ml_models/crop_recommendation_model.pkl')
+MODEL_PATH = os.path.join(settings.BASE_DIR, 'recommendation/ml_models/crop_recommendation_model2.pkl')
 try:
     ml_model = joblib.load(MODEL_PATH)
 except:
@@ -32,22 +33,45 @@ def normalize_soil_data(raw_n, raw_p, raw_k, raw_rainfall):
     DATASET_MAX_RAIN = 298.5
     
     # 1. Cap NPK values to prevent Out-Of-Distribution (OOD) errors.
-    # If a soil card says 305 N, the model will safely receive 140 (which it knows means "High N").
     norm_n = min(float(raw_n), DATASET_MAX_N)
     norm_p = min(float(raw_p), DATASET_MAX_P)
     norm_k = min(float(raw_k), DATASET_MAX_K)
     
     # 2. Rainfall Safety Net
-    # If the API or user provides total annual rainfall (e.g., 1200mm), 
-    # we approximate the monthly average by dividing by 4 (approx growing season length).
     norm_rainfall = float(raw_rainfall)
+    # If the API or user provides total annual rainfall (e.g., 1200mm), 
+    # we approximate the monthly average by dividing by 4.
     if norm_rainfall > DATASET_MAX_RAIN:
         norm_rainfall = norm_rainfall / 4.0
         # If it's still too high, cap it at the model's absolute limit
         norm_rainfall = min(norm_rainfall, DATASET_MAX_RAIN)
         
     return norm_n, norm_p, norm_k, norm_rainfall
-   
+
+# --- ADD THIS DICTIONARY DIRECTLY IN VIEWS.PY ---
+# This is our "Hardcoded AI Agronomist". It strictly controls what crops are allowed in which states.
+STATE_CROP_WHITELIST = {
+    "andhra pradesh": ["rice", "maize", "chickpea", "kidneybeans", "pigeonpeas", "mothbeans", "mungbean", "blackgram", "lentil", "pomegranate", "banana", "mango", "grapes", "watermelon", "muskmelon", "orange", "papaya", "cotton"],
+    "telangana": ["rice", "maize", "chickpea", "kidneybeans", "pigeonpeas", "mothbeans", "mungbean", "blackgram", "lentil", "pomegranate", "banana", "mango", "grapes", "watermelon", "muskmelon", "orange", "papaya", "cotton"],
+    "maharashtra": ["rice", "maize", "chickpea", "kidneybeans", "pigeonpeas", "mothbeans", "mungbean", "blackgram", "lentil", "pomegranate", "banana", "mango", "grapes", "watermelon", "muskmelon", "orange", "papaya", "cotton", "coffee", "jute"],
+    "karnataka": ["rice", "maize", "chickpea", "kidneybeans", "pigeonpeas", "mothbeans", "mungbean", "blackgram", "lentil", "pomegranate", "banana", "mango", "grapes", "watermelon", "muskmelon", "orange", "papaya", "cotton", "coffee", "coconut"],
+    "Himachal Pradesh": ["maize", "kidneybeans", "pomegranate", "mango", "grapes", "apple", "orange"],
+    "uttarakhand": ["maize", "kidneybeans", "pomegranate", "mango", "grapes", "apple", "orange", "rice"],
+    "jammu and kashmir": ["maize", "kidneybeans", "pomegranate", "apple", "orange"],
+    "kerala": ["rice", "banana", "mango", "papaya", "coconut", "coffee", "jute"],
+    "gujarat": ["rice", "maize", "chickpea", "kidneybeans", "pigeonpeas", "mothbeans", "mungbean", "blackgram", "lentil", "pomegranate", "banana", "mango", "grapes", "watermelon", "muskmelon", "orange", "papaya", "cotton"],
+    "punjab": ["rice", "maize", "chickpea", "kidneybeans", "pigeonpeas", "mothbeans", "mungbean", "blackgram", "lentil", "pomegranate", "banana", "mango", "grapes", "watermelon", "muskmelon", "orange", "papaya", "cotton"],
+    "tamil nadu": ["rice", "maize", "chickpea", "kidneybeans", "pigeonpeas", "mothbeans", "mungbean", "blackgram", "lentil", "pomegranate", "banana", "mango", "grapes", "watermelon", "muskmelon", "orange", "papaya", "cotton", "coconut", "coffee"],
+    "madhya pradesh": ["rice", "maize", "chickpea", "kidneybeans", "pigeonpeas", "mothbeans", "mungbean", "blackgram", "lentil", "pomegranate", "banana", "mango", "grapes", "watermelon", "muskmelon", "orange", "papaya", "cotton"]
+}
+
+def get_allowed_crops(state_name):
+    """Helper function to fetch the allowed crops safely."""
+    if not state_name:
+        return None
+    state_name = str(state_name).lower().strip()
+    return STATE_CROP_WHITELIST.get(state_name, None)
+
 class RecommendCropView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -60,10 +84,11 @@ class RecommendCropView(APIView):
         if serializer.is_valid():
             data = serializer.validated_data
             
+            # 1. Normalize data safely
             safe_n, safe_p, safe_k, safe_rain = normalize_soil_data(
-            data['nitrogen'], data['phosphorus'], data['potassium'], data['rainfall']
+                data['nitrogen'], data['phosphorus'], data['potassium'], data['rainfall']
             )
-            
+                        
             input_features = pd.DataFrame([{
                 'N': safe_n,
                 'P': safe_p,
@@ -74,59 +99,68 @@ class RecommendCropView(APIView):
                 'rainfall': safe_rain
             }]).astype(dtype='float64')
             
-            # --- NEW PROBABILITY LOGIC ---
-            # 1. Get the probabilities for all crops
+            # 2. Get ML Probabilities
             probabilities = ml_model.predict_proba(input_features)[0]
-            
-            # 2. Get the corresponding crop names (classes)
             crop_classes = ml_model.classes_
             
-            # 3. Create a list of tuples: [('rice', 85.5), ('maize', 12.0), ...]
             crop_probs = []
             for i in range(len(crop_classes)):
                 prob_percentage = round(probabilities[i] * 100, 1)
-                if prob_percentage > 0: # Only include crops with > 0% chance
+                if prob_percentage > 0:
                     crop_probs.append({
                         "crop": crop_classes[i],
                         "probability": prob_percentage
                     })
             
-            # 4. Sort by highest probability first
             crop_probs = sorted(crop_probs, key=lambda x: x['probability'], reverse=True)
             
-            # 5. Get the absolute best match
-            top_crop = crop_probs[0]['crop']
-            
-            # Save to Database (just saving the top crop for history)
+            # 3. Apply Geographical Safety Filter
+            user_state = request.data.get("state", "")
+            allowed_crops = get_allowed_crops(user_state)
+
+            if allowed_crops is not None:
+                # Filter out crops that are NOT in the state's whitelist
+                final_safe_crops = [
+                    crop for crop in crop_probs if crop["crop"] in allowed_crops
+                ]
+
+                # If the whitelist rejected everything (very rare), just fallback to ML
+                if len(final_safe_crops) == 0:
+                    final_safe_crops = crop_probs[:5]
+            else:
+                # If the user didn't provide a state, or we don't have rules for it, trust the ML
+                final_safe_crops = crop_probs[:5]
+
+            # 4. Save and Return the Final Safe Crop
+            top_crop = final_safe_crops[0]['crop']
+                        
             CropPrediction.objects.create(
                 user=request.user,
                 predicted_crop=top_crop, 
                 **data
             )
             
-            # Return the top crop AND the top 4 alternatives
+            # Return top crop, and up to 4 alternatives (ensuring no indexing errors)
             return Response({
                 'recommended_crop': top_crop,
-                'alternatives': crop_probs[:4] # Returns top 4 highest probability crops
+                'alternatives': final_safe_crops[1:5] 
             }, status=status.HTTP_200_OK)
-        
+            
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
 class UserHistoryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        # Fetch predictions only for the current user
         history = CropPrediction.objects.filter(user=request.user).order_by('-created_at')
         serializer = PredictionHistorySerializer(history, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
-    
+
 class SoilCardOCRView(APIView):
     parser_classes = (MultiPartParser, FormParser)
 
     def post(self, request, *args, **kwargs):
         file_obj = request.FILES.get('image')
-        # 1. Capture optional coordinates sent from the frontend
         lat = request.data.get('lat')
         lng = request.data.get('lng')
 
@@ -136,16 +170,19 @@ class SoilCardOCRView(APIView):
         try:
             client = genai.Client(api_key=settings.GEMINI_API_KEY)
             
-            # 1. Update prompt to ask for standardized spelling AND approximate coordinates
+            # UPGRADE 1: Explicitly ask Gemini for the State
             prompt = """
             Analyze this Indian Soil Health Card. 
             Extract the following parameters: Nitrogen (N), Phosphorus (P), Potassium (K), and pH.
             Extract the District or City name mentioned on the card. 
-            CRITICAL INSTRUCTIONS FOR LOCATION:
-            1. Standardize the location name to its most widely accepted English spelling (e.g., output "Bagalkot" instead of "Bagalkote").
+            Extract or Infer the State name where this district is located in India.
+            
+            CRITICAL INSTRUCTIONS FOR LOCATION & CLIMATE:
+            1. Standardize the location name to its most widely accepted English spelling.
             2. Provide the approximate latitude and longitude for this district/city.
+            3. Based on your climate knowledge database for this district, provide the average long-term cumulative monthly rainfall baseline (in mm) for the current agricultural growing season in this region.
             Return ONLY a valid JSON object. If a value is missing, set it to null.
-            Example: {"N": 120, "P": 45, "K": 200, "ph": 6.5, "location_name": "Kullu", "approx_lat": 31.95, "approx_lng": 77.10}
+            Example: {"N": 120, "P": 45, "K": 200, "ph": 6.5, "location_name": "Kullu", "state": "Himachal Pradesh", "approx_lat": 31.95, "approx_lng": 77.10, "estimated_seasonal_rainfall": 85.0}
             """
 
             response = client.models.generate_content(
@@ -164,13 +201,11 @@ class SoilCardOCRView(APIView):
             
             extracted_data = json.loads(response.text)
             
-            # 2. Triple-Tiered Location Priority
             final_lat, final_lng = None, None
             card_location = extracted_data.get("location_name")
             gemini_lat = extracted_data.get("approx_lat")
             gemini_lng = extracted_data.get("approx_lng")
             
-            # PRIORITY 1: Try Open-Meteo Geocoding (Most accurate)
             if card_location and str(card_location).lower() != "null":
                 geo_url = "https://geocoding-api.open-meteo.com/v1/search"
                 geo_params = {"name": card_location, "count": 1, "format": "json"}
@@ -179,57 +214,84 @@ class SoilCardOCRView(APIView):
                     if geo_res.get("results"):
                         final_lat = geo_res["results"][0]["latitude"]
                         final_lng = geo_res["results"][0]["longitude"]
-                        print(f"✅ Geocoded exact location: {card_location} ({final_lat}, {final_lng})")
-                    else:
-                        print(f"⚠️ Geocoding API missed '{card_location}'.")
+                        
+                        # UPGRADE 2: Use Geocoding API to lock in the State (admin1)
+                        # If Gemini failed to guess the state, Open-Meteo will provide it exactly!
+                        fetched_state = geo_res["results"][0].get("admin1")
+                        if fetched_state:
+                            extracted_data["state"] = fetched_state
+                            
+                        print(f"✅ Geocoded exact location: {card_location}, {extracted_data.get('state')} ({final_lat}, {final_lng})")
                 except Exception as e:
                     print(f"❌ Geocoding request failed: {e}")
 
-            # PRIORITY 2: Use Gemini's AI-estimated coordinates (Saves us from spelling errors)
             if not final_lat and gemini_lat and gemini_lng:
                 final_lat = gemini_lat
                 final_lng = gemini_lng
                 print(f"🤖 Fallback to AI coordinates for {card_location}: ({final_lat}, {final_lng})")
 
-            # PRIORITY 3: Device GPS (Absolute last resort)
             if not final_lat and lat and lng:
                 final_lat = lat
                 final_lng = lng
                 print("📡 Fallback to Device GPS coordinates.")
 
-            # 3. Fetch Weather if we secured coordinates
             if final_lat and final_lng:
-                weather_url = "https://api.open-meteo.com/v1/forecast"
-                weather_params = {
+                today = datetime.date.today()
+                start_date = (today - timedelta(days=95)).strftime("%Y-%m-%d")
+                end_date = (today - timedelta(days=5)).strftime("%Y-%m-%d")
+                
+                current_weather_url = "https://api.open-meteo.com/v1/forecast"
+                current_params = {
                     "latitude": final_lat,
                     "longitude": final_lng,
                     "current": "temperature_2m,relative_humidity_2m",
+                    "timezone": "auto"
+                }
+                
+                archive_weather_url = "https://archive-api.open-meteo.com/v1/archive"
+                archive_params = {
+                    "latitude": final_lat,
+                    "longitude": final_lng,
+                    "start_date": start_date,
+                    "end_date": end_date,
                     "daily": "precipitation_sum",
                     "timezone": "auto"
                 }
+                
                 try:
-                    weather_res = requests.get(weather_url, params=weather_params).json()
+                    curr_res = requests.get(current_weather_url, params=current_params).json()
+                    if "current" in curr_res:
+                        extracted_data["temperature"] = curr_res["current"].get("temperature_2m")
+                        extracted_data["humidity"] = curr_res["current"].get("relative_humidity_2m")
                     
-                    if "current" in weather_res:
-                        extracted_data["temperature"] = weather_res["current"].get("temperature_2m")
-                        extracted_data["humidity"] = weather_res["current"].get("relative_humidity_2m")
+                    arch_res = requests.get(archive_weather_url, params=archive_params).json()
                     
-                    if "daily" in weather_res and weather_res["daily"].get("precipitation_sum"):
-                        extracted_data["rainfall"] = weather_res["daily"]["precipitation_sum"][0]
+                    if "daily" in arch_res and "precipitation_sum" in arch_res["daily"]:
+                        rain_data = [r for r in arch_res["daily"]["precipitation_sum"] if r is not None]
+                        if rain_data:
+                            seasonal_rainfall = sum(rain_data) / 3.0
+                            extracted_data["rainfall"] = round(seasonal_rainfall, 2)
+                    
+                    if extracted_data.get("rainfall", 0) <= 5.0 and "estimated_seasonal_rainfall" in extracted_data:
+                        print("⚠️ Low/Zero recent rainfall detected. Falling back to AI Climatology baseline.")
+                        extracted_data["rainfall"] = extracted_data["estimated_seasonal_rainfall"]
                         
-                    print(f"🌤️ Weather fetched for ({final_lat}, {final_lng}) - Humidity: {extracted_data.get('humidity')}%")
+                    print(f"🌤️ Weather processed - Temp: {extracted_data.get('temperature')}°C, Rain: {extracted_data.get('rainfall')}mm")
                 except Exception as e:
                     print(f"❌ Weather fetching failed: {e}")
+                    if "estimated_seasonal_rainfall" in extracted_data:
+                        extracted_data["rainfall"] = extracted_data["estimated_seasonal_rainfall"]
 
-            # Clean up the output so frontend doesn't get unnecessary data
+            # Clean up the output
             extracted_data.pop("approx_lat", None)
             extracted_data.pop("approx_lng", None)
+            extracted_data.pop("estimated_seasonal_rainfall", None)
 
             return Response(extracted_data, status=200)
 
         except Exception as e:
-            return Response({"error": str(e)}, status=500) 
-        
+            return Response({"error": str(e)}, status=500)
+   
 class MarketForecastView(APIView):
     permission_classes = [permissions.AllowAny] # Allow all users to see public market data
 
