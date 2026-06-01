@@ -1,27 +1,25 @@
-from rest_framework import generics
+from rest_framework import generics, viewsets, status
 from rest_framework.permissions import IsAuthenticated, AllowAny
-from .models import User, Farm, FarmSeason, PestDetection, PestAlertBroadcast, CommunityPost
-from .serializers import UserSerializer, CustomTokenObtainPairSerializer, UpdateProfileSerializer, FarmSerializer,FarmSeasonSerializer, PestDetectionSerializer, PestAlertBroadcastSerializer, CommunityPostSerializer
+from rest_framework.pagination import CursorPagination
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.views import APIView
-import firebase_admin
 from rest_framework.decorators import action
-from firebase_admin import auth, credentials
 from rest_framework.response import Response
-import os, time
-from django.utils.timezone import now
-import json
-from django.conf import settings
-from rest_framework import viewsets, status
-from .tasks import calculate_pest_spread
 from rest_framework.exceptions import ValidationError
-from django.shortcuts import get_object_or_404
 from rest_framework.parsers import FormParser, MultiPartParser
+from .models import User, Farm, FarmSeason, PestDetection, PestAlertBroadcast, Post
+from .serializers import UserSerializer, CustomTokenObtainPairSerializer, UpdateProfileSerializer, FarmSerializer,FarmSeasonSerializer, PestDetectionSerializer, PestAlertBroadcastSerializer, PostSerializer
+from firebase_admin import auth, credentials
+import os, time, json, firebase_admin
+from django.utils.timezone import now
+from django_filters.rest_framework import DjangoFilterBackend
+from django.conf import settings
+from django.core.cache import cache
+from django.shortcuts import get_object_or_404
 from django.contrib.gis.geos import Point
 from .ai_engine import analyze_crop_image
 from .tasks import calculate_pest_spread
-
 
 if not firebase_admin._apps:
     firebase_env = os.getenv("FIREBASE_CREDENTIALS")
@@ -35,16 +33,12 @@ if not firebase_admin._apps:
     firebase_admin.initialize_app(cred)
     
 # 1. Registration View
-# This handles the creation of a new user.
-# We use AllowAny because a user must be able to register without being logged in.
 class CreateUserView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = UserSerializer
     permission_classes = [AllowAny] 
 
 # 2. Example Protected View
-# This is just to test if your authentication is working.
-# It returns the details of the currently logged-in user.
 class UserDetailView(generics.RetrieveUpdateAPIView):
     queryset = User.objects.all()
     serializer_class = UserSerializer
@@ -136,122 +130,6 @@ class FirebaseAuthView(APIView):
             print(f"Auth Error: {e}")
             return Response({'error': 'Invalid Token'}, status=401)
 
-# Note: You can DELETE 'CreateUserView' and 'CustomTokenObtainPairView' 
-# if you migrate fully to this flow, as they are no longer needed.
-
-""" class FirebaseAuthView(APIView):
-
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        id_token = request.data.get('token')
-        mode = request.data.get('mode') # 'login' or 'signup'
-
-        if not id_token:
-            return Response({'error': 'No token provided'}, status=400)
-
-        try:
-            # 1. Verify Token with Firebase
-            decoded_token = auth.verify_id_token(id_token)
-            
-            # Extract Identity Data
-            uid = decoded_token['uid']
-            email = decoded_token.get('email')
-            phone = decoded_token.get('phone_number') # e.g., +919999999999
-            
-            # Determine Provider (google.com, phone, password, etc.)
-            firebase_provider_id = decoded_token.get('firebase', {}).get('sign_in_provider')
-            print(f"Provider ID: {firebase_provider_id}")
-            # Map Firebase provider IDs to your readable names
-            provider_map = {
-                'google.com': 'google',
-                'phone': 'phone',
-                'password': 'email'
-            }
-            current_provider = provider_map.get(firebase_provider_id, firebase_provider_id)
-
-            user = None
-
-            # --- LOGIC BRANCH 1: User has Email (Google Login) ---
-            if email:
-                try:
-                    user = User.objects.get(email=email)
-                    
-                    # Requirement 2: User exists, just link/update provider list
-                    if current_provider not in user.auth_providers:
-                       if not user.photo_url: 
-                        user.photo_url = decoded_token.get('picture') or decoded_token.get('photo_url')
-                        user.auth_providers.append(current_provider)
-                        user.last_login = now()
-                        user.save()
-                        
-                except User.DoesNotExist:
-                    # if mode == 'login':
-                    #     return Response({'error': 'Account not found. Please sign up.'}, status=404)
-                    password = request.data.get("password") if current_provider == "email" else None
-                    
-                    # Create New User (Google)
-                    user = User.objects.create_user(
-                        email=email,
-                        password=password, 
-                        first_name=decoded_token.get('name', '').split(' ')[0],
-                        last_name=' '.join(decoded_token.get('name', '').split(' ')[1:]) if decoded_token.get('name') else '',
-                        photo_url=decoded_token.get('picture') or decoded_token.get('photo_url'),
-                        last_login=now(),
-                        phone_number=None,
-                        auth_providers=[current_provider]
-                    )
-
-            # --- LOGIC BRANCH 2: User has Phone (Phone Login) ---
-            elif phone:
-                try:
-                    user = User.objects.get(phone_number=phone)
-                    
-                    # Update provider list if needed
-                    if current_provider not in user.auth_providers:
-                        user.auth_providers.append(current_provider)
-                        user.last_login = now()
-                        user.save()
-
-                except User.DoesNotExist:
-                    # Requirement 4: Strict Login Check
-                    if mode == 'login':
-                        return Response({'error': 'No account linked to this phone number.'}, status=404)
-                    
-                    # Requirement 3: Signup Check 
-                    # (Implicitly passed since we are in Except block)
-                    
-                    # Create New User (Phone)
-                    # Use dummy email as placeholder
-                    placeholder_email = f"{uid}@phone.farmassist"
-                    
-                    user = User.objects.create_user(
-                        email=placeholder_email,
-                        phone_number=phone,
-                        first_name="Farmer",
-                        last_login=now(),
-                        auth_providers=[current_provider]
-                    )
-
-            if not user:
-                return Response({'error': 'Authentication failed.'}, status=400)
-
-            # Generate JWT Tokens
-            refresh = RefreshToken.for_user(user)
-            refresh['email'] = user.email
-
-            return Response({
-                'refresh': str(refresh),
-                'access': str(refresh.access_token),
-                'user': UserSerializer(user).data
-            })
-
-        except Exception as e:
-            print(f"Auth Error: {e}")
-            return Response({'error': 'Invalid Token'}, status=401)
-"""
-
-
 class LinkAccountView(APIView):
     """
     Requirement 5: User updates email or links Google to existing Phone account.
@@ -285,9 +163,7 @@ class LinkAccountView(APIView):
         
         return Response(serializer.errors, status=400)
     
-    
-# Pest control
-
+#Farms
 class FarmViewSet(viewsets.ModelViewSet):
     serializer_class = FarmSerializer
     permission_classes = [IsAuthenticated]
@@ -328,6 +204,7 @@ class FarmSeasonViewSet(viewsets.ModelViewSet):
             is_active=True
         ).exclude(id=new_season.id).update(is_active=False)
 
+#Pest
 class PestDetectionViewSet(viewsets.ModelViewSet):
     serializer_class = PestDetectionSerializer
     parser_classes = [MultiPartParser, FormParser]
@@ -398,8 +275,6 @@ class PestDetectionViewSet(viewsets.ModelViewSet):
         # 5. Trigger the Celery Broadcast Task
         calculate_pest_spread.delay(detection.id)
     
-# In api/views.py
-
 class PestAlertBroadcastViewSet(viewsets.ModelViewSet):
     # Ensure you create a simple serializer for PestAlertBroadcast in serializers.py
     serializer_class = PestAlertBroadcastSerializer 
@@ -428,18 +303,36 @@ class PestAlertBroadcastViewSet(viewsets.ModelViewSet):
             
         return Response({"status": "dismissed successfully"})
     
-class CommunityPostViewSet(viewsets.ModelViewSet):
-    serializer_class = CommunityPostSerializer
-    permission_classes = [IsAuthenticated]
+#Post
+class FeedCursorPagination(CursorPagination):
+    page_size = 10
+    ordering = '-created_at' 
 
-    def get_queryset(self):
-        # Order by newest first
-        return CommunityPost.objects.all().select_related('author', 'related_detection').order_by('-timestamp')
+class PostViewSet(viewsets.ModelViewSet):
+    queryset = Post.objects.select_related('author').all()
+    serializer_class = PostSerializer
+    pagination_class = FeedCursorPagination
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['category']
 
-    def perform_create(self, serializer):
-        # Automatically attach the logged-in user as the author
-        serializer.save(author=self.request.user)
-    
+    def list(self, request, *args, **kwargs):
+        category = request.query_params.get('category', 'All')
+        cursor = request.query_params.get('cursor')
+        
+        # Only cache the first page. Cursors are dynamic.
+        cache_key = f"feed_page_1_{category}"
+        
+        if not cursor:
+            cached_data = cache.get(cache_key)
+            if cached_data:
+                return Response(cached_data)
+
+        response = super().list(request, *args, **kwargs)
+        
+        if not cursor:
+            cache.set(cache_key, response.data, timeout=60 * 15) # Cache for 15 mins
+            
+        return response
     
     
     
