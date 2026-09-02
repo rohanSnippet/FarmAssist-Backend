@@ -18,8 +18,8 @@ from django.conf import settings
 from django.core.cache import cache
 from django.shortcuts import get_object_or_404
 from django.contrib.gis.geos import Point
-from .ai_engine import analyze_crop_image
 from .tasks import calculate_pest_spread
+from .ai_engine import process_crop_diagnostic_pipeline
 
 if not firebase_admin._apps:
     firebase_env = os.getenv("FIREBASE_CREDENTIALS")
@@ -225,7 +225,7 @@ class PestDetectionViewSet(viewsets.ModelViewSet):
 
         try:
             # 1. Pass the image to the Gemini Vision Engine
-            ai_result = analyze_crop_image(image_file)
+            ai_result = process_crop_diagnostic_pipeline(image_file)
             
             # 2. CRITICAL: Reset the file pointer! 
             # Because Gemini read the file bytes, the pointer is at the end of the file. 
@@ -333,6 +333,48 @@ class PostViewSet(viewsets.ModelViewSet):
             cache.set(cache_key, response.data, timeout=60 * 15) # Cache for 15 mins
             
         return response
-    
-    
-    
+
+class CropScannerAPIView(APIView):
+    parser_classes = (MultiPartParser, FormParser)
+
+    def post(self, request, *args, **kwargs):
+        image_file = request.FILES.get('image')
+        crop_hint = request.data.get('crop', None)
+        
+        # Extract language code from query param, body, or HTTP Accept-Language header
+        # Defaults to 'en' (matching React i18next config)
+        lang_code = (
+            request.data.get('language') or 
+            request.headers.get('Accept-Language', 'en')[:2].lower()
+        )
+
+        if not image_file:
+            return Response(
+                {"error": "No image file provided."}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        image_bytes = image_file.read()
+
+        # Run pipeline
+        diagnostic_result = process_crop_diagnostic_pipeline(
+            image_bytes=image_bytes,
+            crop_hint=crop_hint,
+            lang_code=lang_code
+        )
+
+        # Persist scan history if user is authenticated
+        if request.user.is_authenticated:
+            try:
+                PestDetection.objects.create(
+                    user=request.user,
+                    crop_type=diagnostic_result.get("crop", "Unknown"),
+                    pest_name=diagnostic_result.get("primary_diagnosis", "Unknown"),
+                    confidence=diagnostic_result.get("confidence", 0.0),
+                    recommendations=diagnostic_result.get("advisory", "")
+                )
+            except Exception as e:
+                # Non-fatal database logging failure
+                pass
+
+        return Response(diagnostic_result, status=status.HTTP_200_OK)

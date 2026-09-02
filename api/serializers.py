@@ -10,7 +10,7 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = ["id","first_name", "last_name", "email", "password", "photo_url", "phone_number", "auth_providers", "location_label", "latitude", "longitude"]
         extra_kwargs = {"password": {"write_only": True}}
-        read_only_feilds = ["email", "auth_providers"]
+        read_only_fields = ["email", "auth_providers"]
     
     def validate_email(self, value):
         if User.objects.filter(email= value).exists():
@@ -76,23 +76,32 @@ class FarmSerializer(serializers.ModelSerializer):
             internal_data['boundaries'] = GEOSGeometry(boundaries_str)
         return internal_data
 
-# In api/serializers.py
-
 class PestDetectionSerializer(serializers.ModelSerializer):
     farm_id = serializers.IntegerField(write_only=True)
 
     class Meta:
         model = PestDetection
-        fields = ['id', 'farm_id', 'farm_season', 'pest_name', 'severity_level', 'detection_location', 'image']
-        
-        # MAGIC FIX: Add 'detection_location' here so the serializer stops demanding it from the frontend
-        read_only_fields = ['farm_season', 'detection_location']
+        fields = [
+            'id',
+            'farm_id',
+            'farm_season',
+            'pest_name',
+            'severity_level',
+            'image_url',
+            'detection_location',
+            'weather_snapshot',
+            'timestamp',
+        ]
+
+        read_only_fields = [
+            'id',
+            'farm_season',
+            'detection_location',
+            'timestamp',
+        ]
 
     def create(self, validated_data):
-        # Remove 'farm_id' from the dictionary before sending it to the database
         validated_data.pop('farm_id', None)
-        
-        # Now pass the cleaned data to the standard Django creation process
         return super().create(validated_data)
 
 class PestAlertBroadcastSerializer(serializers.ModelSerializer):
