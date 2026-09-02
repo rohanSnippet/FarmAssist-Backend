@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 
-# Import everything from your 'api' app
+# 1. Add CropScannerAPIView to your imports
 from api.views import (
     CreateUserView, 
     UserDetailView, 
@@ -13,7 +13,8 @@ from api.views import (
     FarmSeasonViewSet,
     PestAlertBroadcastViewSet, 
     PestDetectionViewSet,
-    PostViewSet
+    PostViewSet,
+    CropScannerAPIView # <-- Added here
 )
 
 from recommendation.views import (
@@ -26,7 +27,6 @@ from recommendation.views import (
 
 from rest_framework_simplejwt.views import TokenRefreshView
 
-# Create the router for the viewsets inside your 'api' app
 router = DefaultRouter()
 router.register(r'farms', FarmViewSet, basename='farm')
 router.register(r'detections', PestDetectionViewSet, basename='detection')
@@ -52,6 +52,9 @@ urlpatterns = [
     path('ocr-soil-card/', SoilCardOCRView.as_view(), name='ocr_soil_card'),
     path('market-forecast/', MarketForecastView.as_view(), name='market_forecast'),
     path('top-market-forecast/', TopCropsForecastView.as_view(), name='top_market_forecast'),
+    
+    # 2. Add the AI scan endpoint here
+    path('api/scan/', CropScannerAPIView.as_view(), name='crop-scan'),
     
     # This single line handles /api/farms/, /api/detections/, and /api/alerts/
     path('api/', include(router.urls)),
