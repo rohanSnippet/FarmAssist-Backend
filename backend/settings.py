@@ -165,11 +165,16 @@ DATABASES = {
 
 DATA_GOV_API_KEY = os.environ.get("DATA_GOV_API_KEY");
 
+REDIS_URL=os.environ.get(
+    "REDIS_URL",
+    "redis://127.0.0.1:6379"
+)
+
 # backend/settings.py
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": "redis://127.0.0.1:6379/1", # Ensure your Docker Redis container is running
+        "LOCATION": f"{REDIS_URL}/1", # Ensure your Docker Redis container is running
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
         }
@@ -235,7 +240,7 @@ GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
 
 # Celery Configuration
 # Using database 2 to keep task queues separate from your default cache (which uses database 1)
-CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://127.0.0.1:6379/2')
+CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', f'{REDIS_URL}/2')
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
