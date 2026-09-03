@@ -32,8 +32,10 @@ SECRET_KEY = os.environ.get('SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG') == 'True'
 
-# ALLOWED_HOSTS = ['.vercel.app', '.now.sh', '127.0.0.1', 'localhost']
+# ALLOWED_HOSTS = ['.vercel.app', '.now.sh', '127.0.0.1', 'localhost', '192.168.43.128']
 ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '127.0.0.1').split(',')
+# ALLOWED_HOSTS = ["*"]
+
 #Authentication settings
 AUTH_USER_MODEL = 'api.User'
 
@@ -223,6 +225,7 @@ CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "https://farmass.netlify.app",
+    "http://192.168.43.128:5173"
 ]
 
 FIREBASE_CREDENTIALS = os.environ.get('FIREBASE_CREDENTIALS', os.path.join(BASE_DIR, 'serviceAccountKey.json'))
