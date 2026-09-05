@@ -1,4 +1,4 @@
-from rest_framework import generics, viewsets, status
+from rest_framework import generics, viewsets, status, permissions
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.pagination import CursorPagination
 from rest_framework_simplejwt.views import TokenObtainPairView
@@ -8,8 +8,19 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
 from rest_framework.parsers import FormParser, MultiPartParser
-from .models import User, Farm, FarmSeason, PestDetection, PestAlertBroadcast, Post
-from .serializers import UserSerializer, CustomTokenObtainPairSerializer, UpdateProfileSerializer, FarmSerializer,FarmSeasonSerializer, PestDetectionSerializer, PestAlertBroadcastSerializer, PostSerializer
+from .models import User, Farm, FarmSeason, PestDetection, PestAlertBroadcast, Post, PostUpvote, CropScanJob, UserNotification
+from .serializers import UserSerializer, CustomTokenObtainPairSerializer, UpdateProfileSerializer, FarmSerializer,FarmSeasonSerializer, PestDetectionSerializer, PestAlertBroadcastSerializer, PostSerializer, PostCommentSerializer, CropScanJobSerializer, UserNotificationSerializer
+from django.db.models import F
+
+# Cloudinary is optional. If the package is not installed, we gracefully
+# fall back to saving the uploaded file to Django's configured storage
+# (the `Post.image` ImageField).
+try:
+    import cloudinary.uploader as cloudinary_uploader
+    _CLOUDINARY_AVAILABLE = True
+except Exception:
+    cloudinary_uploader = None
+    _CLOUDINARY_AVAILABLE = False
 from firebase_admin import auth, credentials
 import os, time, json, firebase_admin
 from django.utils.timezone import now
@@ -18,7 +29,7 @@ from django.conf import settings
 from django.core.cache import cache
 from django.shortcuts import get_object_or_404
 from django.contrib.gis.geos import Point
-from .tasks import calculate_pest_spread
+from .tasks import calculate_pest_spread, run_crop_scan_task
 from .ai_engine import process_crop_diagnostic_pipeline
 
 if not firebase_admin._apps:
@@ -31,7 +42,10 @@ if not firebase_admin._apps:
         cred = credentials.Certificate(cred_path) """
     
     firebase_admin.initialize_app(cred)
-    
+
+# ===================================
+# User
+# =================================== 
 # 1. Registration View
 class CreateUserView(generics.CreateAPIView):
     queryset = User.objects.all()
@@ -162,8 +176,10 @@ class LinkAccountView(APIView):
             })
         
         return Response(serializer.errors, status=400)
-    
-#Farms
+
+# ==========================================================
+# Farms
+# ==========================================================
 class FarmViewSet(viewsets.ModelViewSet):
     serializer_class = FarmSerializer
     permission_classes = [IsAuthenticated]
@@ -204,7 +220,9 @@ class FarmSeasonViewSet(viewsets.ModelViewSet):
             is_active=True
         ).exclude(id=new_season.id).update(is_active=False)
 
+# =============================================================
 #Pest
+# =============================================================
 class PestDetectionViewSet(viewsets.ModelViewSet):
     serializer_class = PestDetectionSerializer
     parser_classes = [MultiPartParser, FormParser]
@@ -250,30 +268,58 @@ class PestDetectionViewSet(viewsets.ModelViewSet):
     # ---------------------------------------------------------
     def perform_create(self, serializer):
         farm_id = self.request.data.get('farm_id')
-        
-        # 1. Verify the farm exists and belongs to the user
+
+        # Guard 1: farm_id must be present in the request
+        if not farm_id:
+            raise ValidationError({
+                "code": "MISSING_FARM_ID",
+                "message": "No farm was selected. Please choose a farm before broadcasting a pest alert."
+            })
+
+        # Guard 2: The farm must exist and belong to the logged-in user
         try:
             farm = Farm.objects.get(id=farm_id, user=self.request.user)
         except Farm.DoesNotExist:
-            raise ValidationError({"farm_id": "Invalid Farm ID."})
+            raise ValidationError({
+                "code": "FARM_NOT_FOUND",
+                "message": "The selected farm could not be found. It may have been deleted or does not belong to your account."
+            })
 
-        # 2. Find the ACTIVE crop season for this farm
+        # Guard 3: The farm must have a mapped boundary polygon
+        if not farm.boundaries:
+            raise ValidationError({
+                "code": "FARM_NO_BOUNDARY",
+                "message": f"Farm '{farm.name}' has no mapped boundary. Please draw your farm boundary on the map before broadcasting."
+            })
+
+        # Guard 4: The farm must have an active crop season (not fallow land)
         active_season = FarmSeason.objects.filter(farm=farm, is_active=True).first()
         if not active_season:
-            raise ValidationError({"farm_id": "You must plant a crop on this land before logging a pest."})
+            raise ValidationError({
+                "code": "FALLOW_LAND",
+                "message": f"Farm '{farm.name}' is currently fallow (no active crop). Plant a crop on this land before logging a pest detection."
+            })
 
-        # 3. MAGIC FIX: Ignore device GPS entirely. 
-        # Force the detection point to be the exact mathematical center of the Farm's polygon.
+        # Derive the detection point from the farm's centroid (no device GPS dependency)
         detection_point = farm.boundaries.centroid
 
-        # 4. Save the record
+        # Save the detection record
         detection = serializer.save(
             farm_season=active_season,
             detection_location=detection_point
         )
-        
-        # 5. Trigger the Celery Broadcast Task
-        calculate_pest_spread.delay(detection.id)
+
+        # Trigger the lightweight background broadcast task using threading
+        try:
+            import threading
+            thread = threading.Thread(target=calculate_pest_spread, args=(detection.id,))
+            thread.start()
+        except Exception as e:
+            # Non-fatal: detection is already saved, broadcast failure should not roll back the detection
+            import logging
+            logging.getLogger(__name__).error(
+                f"[PestDetection] threading broadcast task failed to queue for detection {detection.id}: {e}"
+            )
     
 class PestAlertBroadcastViewSet(viewsets.ModelViewSet):
     # Ensure you create a simple serializer for PestAlertBroadcast in serializers.py
@@ -303,37 +349,6 @@ class PestAlertBroadcastViewSet(viewsets.ModelViewSet):
             
         return Response({"status": "dismissed successfully"})
     
-#Post
-class FeedCursorPagination(CursorPagination):
-    page_size = 10
-    ordering = '-created_at' 
-
-class PostViewSet(viewsets.ModelViewSet):
-    queryset = Post.objects.select_related('author').all()
-    serializer_class = PostSerializer
-    pagination_class = FeedCursorPagination
-    filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['category']
-
-    def list(self, request, *args, **kwargs):
-        category = request.query_params.get('category', 'All')
-        cursor = request.query_params.get('cursor')
-        
-        # Only cache the first page. Cursors are dynamic.
-        cache_key = f"feed_page_1_{category}"
-        
-        if not cursor:
-            cached_data = cache.get(cache_key)
-            if cached_data:
-                return Response(cached_data)
-
-        response = super().list(request, *args, **kwargs)
-        
-        if not cursor:
-            cache.set(cache_key, response.data, timeout=60 * 15) # Cache for 15 mins
-            
-        return response
-
 class CropScannerAPIView(APIView):
     parser_classes = (MultiPartParser, FormParser)
 
@@ -378,3 +393,248 @@ class CropScannerAPIView(APIView):
                 pass
 
         return Response(diagnostic_result, status=status.HTTP_200_OK)
+
+# =============================================================
+# Community
+# ============================================================
+class FeedCursorPagination(CursorPagination):
+    page_size = 10
+    ordering = '-created_at'
+
+class PostViewSet(viewsets.ModelViewSet):
+    serializer_class = PostSerializer
+    pagination_class = FeedCursorPagination
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get_queryset(self):
+        queryset = Post.objects.select_related('author').all()
+        category = self.request.query_params.get('category')
+        district = self.request.query_params.get('district')
+        crop = self.request.query_params.get('crop')
+        urgent = self.request.query_params.get('urgent')
+
+        if category and category.upper() != 'ALL':
+            queryset = queryset.filter(category=category.upper())
+        if district and district.strip():
+            queryset = queryset.filter(district__iexact=district.strip())
+        if crop and crop.strip():
+            queryset = queryset.filter(crop_tag__iexact=crop.strip())
+        if urgent == 'true':
+            queryset = queryset.filter(is_urgent=True)
+
+        return queryset
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        district = self.request.data.get('district') or getattr(user, 'location_label', '')
+        # If an image file is included in the multipart form, upload to Cloudinary
+        image_file = None
+        if hasattr(self.request, 'FILES') and 'image' in self.request.FILES:
+            image_file = self.request.FILES.get('image')
+
+        extra = {
+            'author': user,
+            'district': district,
+            'latitude': getattr(user, 'latitude', None),
+            'longitude': getattr(user, 'longitude', None)
+        }
+
+        if image_file:
+            if _CLOUDINARY_AVAILABLE and cloudinary_uploader is not None:
+                try:
+                    # cloudinary expects a file-like object; pass directly
+                    upload_result = cloudinary_uploader.upload(image_file)
+                    secure_url = upload_result.get('secure_url')
+                    if secure_url:
+                        extra['image_url'] = secure_url
+                except Exception as e:
+                    # Log and continue — fail the upload gracefully instead of breaking the whole post
+                    print(f"Cloudinary upload failed: {e}")
+                    # Fall back to saving the file locally to the ImageField
+                    extra['image'] = image_file
+            else:
+                # Cloudinary not available: save to model ImageField via serializer
+                extra['image'] = image_file
+
+        serializer.save(**extra)
+        # Invalidate page 1 caches across all categories
+        cache.delete_pattern("feed_page_1_*")
+
+    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+    def upvote(self, request, pk=None):
+        post = self.get_object()
+        user = request.user
+        upvote_record = PostUpvote.objects.filter(post=post, user=user)
+
+        if upvote_record.exists():
+            upvote_record.delete()
+            Post.objects.filter(id=post.id).update(upvotes_count=F('upvotes_count') - 1)
+            has_upvoted = False
+        else:
+            PostUpvote.objects.create(post=post, user=user)
+            Post.objects.filter(id=post.id).update(upvotes_count=F('upvotes_count') + 1)
+            has_upvoted = True
+
+        post.refresh_from_db()
+        return Response({
+            'upvotes_count': post.upvotes_count,
+            'has_upvoted': has_upvoted
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['get', 'post'], permission_classes=[permissions.IsAuthenticatedOrReadOnly])
+    def comments(self, request, pk=None):
+        post = self.get_object()
+        if request.method == 'GET':
+            comments = post.comments.select_related('author').all()
+            serializer = PostCommentSerializer(comments, many=True)
+            return Response(serializer.data)
+
+        elif request.method == 'POST':
+            serializer = PostCommentSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            serializer.save(author=request.user, post=post)
+            Post.objects.filter(id=post.id).update(comments_count=F('comments_count') + 1)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+# ======================================================================
+# Async Crop Scan Queue
+# ======================================================================
+
+class CropScanSubmitView(APIView):
+    """
+    POST /api/scan/submit/
+
+    Accepts a multipart image upload, persists it as a CropScanJob row,
+    and immediately queues the AI pipeline as a Celery background task.
+    Returns 202 Accepted with the job_id so the frontend can poll later.
+    """
+    permission_classes = [IsAuthenticated]
+    parser_classes     = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        image_file = request.FILES.get('image')
+        if not image_file:
+            return Response(
+                {"code": "MISSING_IMAGE", "message": "No image was uploaded. Please attach a crop image."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        crop_hint = request.data.get('crop_hint', '').strip()
+        language  = request.data.get('language', 'en').strip() or 'en'
+
+        # Read image bytes and persist in DB so no shared filesystem is needed
+        image_bytes = image_file.read()
+
+        job = CropScanJob.objects.create(
+            user       = request.user,
+            status     = CropScanJob.Status.PENDING,
+            crop_hint  = crop_hint,
+            language   = language,
+            image_data = image_bytes,
+        )
+
+        # The task is picked up by the sequential queue worker running in apps.py
+
+
+        return Response(
+            {
+                "job_id":     job.id,
+                "status":     job.status,
+                "created_at": job.created_at,
+                "message":    "Scan queued. Your result will be ready shortly.",
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+
+class CropScanJobViewSet(viewsets.ModelViewSet):
+    """
+    GET /api/scan/jobs/       — list all scan jobs for the logged-in user (newest first)
+    GET /api/scan/jobs/{id}/  — retrieve one job with full result payload
+    DELETE /api/scan/jobs/{id}/ - delete a job
+    """
+    permission_classes = [IsAuthenticated]
+    serializer_class   = CropScanJobSerializer
+    http_method_names  = ['get', 'delete']
+
+    def get_queryset(self):
+        return CropScanJob.objects.filter(user=self.request.user)
+
+class UserNotificationViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = UserNotificationSerializer
+
+    def get_queryset(self):
+        return UserNotification.objects.filter(user=self.request.user).order_by('-created_at')
+
+    def partial_update(self, request, *args, **kwargs):
+        notification = self.get_object()
+        notification.is_read = True
+        notification.save(update_fields=['is_read'])
+        return Response({"status": "marked as read"})
+
+class CropScanJobImageView(APIView):
+    """
+    Returns the binary image data for a CropScanJob.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk, *args, **kwargs):
+        job = get_object_or_404(CropScanJob, pk=pk, user=request.user)
+        if not job.image_data:
+            return Response({"error": "No image found for this job."}, status=404)
+        
+        # We assume the image is standard JPEG/PNG since it's from the device camera
+        from django.http import HttpResponse
+        return HttpResponse(job.image_data, content_type="image/jpeg")
+
+# ──────────────────────────────────────────────────────────────────────
+# SSE View
+# ──────────────────────────────────────────────────────────────────────
+from django.http import StreamingHttpResponse
+import queue
+
+def stream_notifications(request):
+    """
+    SSE endpoint. Clients connect here to receive real-time notifications.
+    Since EventSource cannot send headers, we expect a ?token=... in the query params.
+    """
+    token = request.GET.get('token')
+    if not token:
+        return StreamingHttpResponse("Unauthorized", status=401)
+    
+    from rest_framework_simplejwt.tokens import AccessToken
+    from django.contrib.auth import get_user_model
+    User = get_user_model()
+    
+    try:
+        access_token = AccessToken(token)
+        user = User.objects.get(id=access_token['user_id'])
+    except Exception:
+        return StreamingHttpResponse("Unauthorized", status=401)
+    
+    def event_stream():
+        from .sse import add_stream, remove_stream
+        q = queue.Queue()
+        add_stream(user.id, q)
+        try:
+            # Yield initial connection success
+            yield f"data: {{\"type\": \"connected\"}}\n\n"
+            
+            while True:
+                # Wait for an event with timeout to keep connection alive
+                try:
+                    event_data = q.get(timeout=30)
+                    yield f"data: {event_data}\n\n"
+                except queue.Empty:
+                    yield f"data: {{\"type\": \"ping\"}}\n\n"
+        except Exception:
+            pass
+        finally:
+            remove_stream(user.id, q)
+            
+    response = StreamingHttpResponse(event_stream(), content_type='text/event-stream')
+    response['Cache-Control'] = 'no-cache'
+    return response

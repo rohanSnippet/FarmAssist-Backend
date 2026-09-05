@@ -1,6 +1,6 @@
 # api/serializers.py
 from rest_framework import serializers
-from .models import User, Farm, FarmSeason, PestDetection, PestAlertBroadcast, Post
+from .models import User, Farm, FarmSeason, PestDetection, PestAlertBroadcast, Post, PostComment, PostUpvote, CropScanJob, UserNotification
 from django.contrib.gis.geos import GEOSGeometry
 import json
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
@@ -116,44 +116,110 @@ class PestAlertBroadcastSerializer(serializers.ModelSerializer):
         # The frontend doesn't need to download huge arrays of user IDs!
         fields = ['id', 'pest_name', 'severity', 'max_risk_score', 'created_at']
         
+class PostCommentSerializer(serializers.ModelSerializer):
+    author_name = serializers.SerializerMethodField()
+    author_photo = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PostComment
+        fields = ['id', 'post', 'author', 'author_name', 'author_photo', 'content', 'is_expert_verified', 'created_at']
+        read_only_fields = ['author', 'is_expert_verified', 'created_at']
+
+    def get_author_name(self, obj):
+        return f"{obj.author.first_name} {obj.author.last_name}".strip() or obj.author.username
+
+    def get_author_photo(self, obj):
+        return getattr(obj.author, 'photo_url', None)
+    
+    
 class PostSerializer(serializers.ModelSerializer):
     author_name = serializers.SerializerMethodField()
-    author_initials = serializers.SerializerMethodField()
-    
+    author_photo = serializers.SerializerMethodField()
+    has_upvoted = serializers.SerializerMethodField()
+
     class Meta:
         model = Post
         fields = [
-            'id', 'author', 'author_name', 'author_initials', 
-            'content', 'content_hi', 'content_mr', 'category', 
-            'image_url', 'likes_count', 'created_at'
+            'id', 'author', 'author_name', 'author_photo', 'category', 'title', 'content',
+            'crop_tag', 'district', 'latitude', 'longitude', 'image', 'is_urgent',
+            'is_verified', 'upvotes_count', 'comments_count', 'has_upvoted', 'created_at', 'image_url'
         ]
-        read_only_fields = ['author', 'likes_count', 'content_hi', 'content_mr', 'created_at']
+        read_only_fields = ['author', 'upvotes_count', 'comments_count', 'is_verified', 'created_at', 'image_url']
 
     def get_author_name(self, obj):
-        """Returns the full name of the author, falling back to username if names aren't set."""
-        if obj.author.first_name or obj.author.last_name:
-            return f"{obj.author.first_name} {obj.author.last_name}".strip()
-        return obj.author.username
+        return f"{obj.author.first_name} {obj.author.last_name}".strip() or obj.author.username
 
-    def get_author_initials(self, obj):
-        """Generates the 1 or 2 letter initials for the frontend avatar."""
-        name = self.get_author_name(obj)
-        parts = name.split()
-        
-        if len(parts) >= 2:
-            return f"{parts[0][0]}{parts[-1][0]}".upper()
-        elif len(parts) == 1 and len(parts[0]) > 0:
-            return f"{parts[0][0]}".upper()
-        return "U" # Default fallback
-        
-    def create(self, validated_data):
-        """
-        Automatically assigns the logged-in user making the request 
-        as the author of the post.
-        """
+    def get_author_photo(self, obj):
+        return getattr(obj.author, 'photo_url', None)
+
+    def get_has_upvoted(self, obj):
         request = self.context.get('request')
-        if request and hasattr(request, 'user'):
-            validated_data['author'] = request.user
-        return super().create(validated_data)
+        if request and request.user.is_authenticated:
+            return PostUpvote.objects.filter(post=obj, user=request.user).exists()
+        return False
+        
+# class PostSerializer(serializers.ModelSerializer):
+#     author_name = serializers.SerializerMethodField()
+#     author_initials = serializers.SerializerMethodField()
+    
+#     class Meta:
+#         model = Post
+#         fields = [
+#             'id', 'author', 'author_name', 'author_initials', 
+#             'content', 'content_hi', 'content_mr', 'category', 
+#             'image_url', 'likes_count', 'created_at'
+#         ]
+#         read_only_fields = ['author', 'likes_count', 'content_hi', 'content_mr', 'created_at']
+
+#     def get_author_name(self, obj):
+#         """Returns the full name of the author, falling back to username if names aren't set."""
+#         if obj.author.first_name or obj.author.last_name:
+#             return f"{obj.author.first_name} {obj.author.last_name}".strip()
+#         return obj.author.username
+
+#     def get_author_initials(self, obj):
+#         """Generates the 1 or 2 letter initials for the frontend avatar."""
+#         name = self.get_author_name(obj)
+#         parts = name.split()
+        
+#         if len(parts) >= 2:
+#             return f"{parts[0][0]}{parts[-1][0]}".upper()
+#         elif len(parts) == 1 and len(parts[0]) > 0:
+#             return f"{parts[0][0]}".upper()
+#         return "U" # Default fallback
+        
+#     def create(self, validated_data):
+#         """
+#         Automatically assigns the logged-in user making the request 
+#         as the author of the post.
+#         """
+#         request = self.context.get('request')
+#         if request and hasattr(request, 'user'):
+#             validated_data['author'] = request.user
+#         return super().create(validated_data)
 
 
+class CropScanJobSerializer(serializers.ModelSerializer):
+    """
+    Serializer for CropScanJob.
+    - List endpoint: lightweight — no image_data
+    - Detail endpoint: includes full result JSON for the frontend to render
+    """
+    class Meta:
+        model  = CropScanJob
+        fields = [
+            'id',
+            'status',
+            'crop_hint',
+            'language',
+            'result',         # null until COMPLETED
+            'error_message',  # populated on FAILED
+            'created_at',
+        ]
+        read_only_fields = fields
+
+class UserNotificationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserNotification
+        fields = ['id', 'title', 'message', 'is_read', 'link', 'created_at']
+        read_only_fields = ['id', 'title', 'message', 'link', 'created_at']
