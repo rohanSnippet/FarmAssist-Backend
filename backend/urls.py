@@ -1,6 +1,10 @@
 from django.contrib import admin
 from django.urls import path, include
+from django.http import JsonResponse
 from rest_framework.routers import DefaultRouter
+
+def health_check(request):
+    return JsonResponse({"status": "ok", "message": "FarmAssist API is running"})
 
 # 1. Add CropScannerAPIView to your imports
 from api.views import (
@@ -42,6 +46,7 @@ router.register(r'scan/jobs', CropScanJobViewSet, basename='scan-job')
 router.register(r'notifications', UserNotificationViewSet, basename='notification')
 
 urlpatterns = [
+    path('', health_check, name='health-check'),
     path('admin/', admin.site.urls),
     
     # Auth & Users
