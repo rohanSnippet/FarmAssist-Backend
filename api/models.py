@@ -86,26 +86,146 @@ class PestAlertBroadcast(models.Model):
     
     timestamp = models.DateTimeField(auto_now_add=True)
 
-class Post(models.Model):
-    CATEGORIES = [
-        ('Crops', 'Crops'), ('Schemes', 'Schemes'), 
-        ('Market', 'Market'), ('Weather', 'Weather')
-    ]
+# class Post(models.Model):
+#     CATEGORIES = [
+#         ('Crops', 'Crops'), ('Schemes', 'Schemes'), 
+#         ('Market', 'Market'), ('Weather', 'Weather')
+#     ]
     
+#     author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+#     content = models.TextField()
+    
+#     # Auto-translated fields
+#     content_hi = models.TextField(blank=True, null=True) # Hindi
+#     content_mr = models.TextField(blank=True, null=True) # Marathi
+    
+#     category = models.CharField(max_length=50, choices=CATEGORIES, default='Crops')
+    
+#     # Stores the Cloudinary string URL sent from React
+#     image_url = models.URLField(max_length=1000, blank=True, null=True)
+    
+#     likes_count = models.PositiveIntegerField(default=0)
+#     created_at = models.DateTimeField(auto_now_add=True)
+
+#     class Meta:
+#         ordering = ['-created_at']
+
+class Post(models.Model):
+    CATEGORY_CHOICES = [
+        ('PEST_ALERT', 'Pest & Disease Outbreak'),
+        ('WEATHER', 'Weather Advisory'),
+        ('CROP_ADVICE', 'Crop & Soil Advice'),
+        ('MARKET', 'Mandi Rates & Market'),
+        ('MACHINERY', 'Equipment & Resource Sharing'),
+        ('GENERAL', 'General Discussion'),
+    ]
+
+    author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='community_posts')
+    category = models.CharField(max_length=30, choices=CATEGORY_CHOICES, default='GENERAL', db_index=True)
+    title = models.CharField(max_length=255)
+    content = models.TextField()
+    crop_tag = models.CharField(max_length=100, blank=True, null=True, db_index=True)
+    
+    # Location context for hyper-local filtering
+    district = models.CharField(max_length=120, blank=True, null=True, db_index=True)
+    latitude = models.FloatField(blank=True, null=True)
+    longitude = models.FloatField(blank=True, null=True)
+    
+    # Media and Urgency flags
+    image = models.ImageField(upload_to='community_posts/%Y/%m/', blank=True, null=True)
+    # If we accept direct uploads to Cloudinary from the backend, we store the
+    # secure URL here. Kept as a separate field to avoid forcing a storage
+    # backend change for existing deployments.
+    image_url = models.URLField(max_length=1000, blank=True, null=True)
+    is_urgent = models.BooleanField(default=False, db_index=True)
+    is_verified = models.BooleanField(default=False)
+    
+    # Denormalized counters for O(1) read performance
+    upvotes_count = models.PositiveIntegerField(default=0)
+    comments_count = models.PositiveIntegerField(default=0)
+    
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-is_urgent', '-created_at']
+
+    def __str__(self):
+        return f"[{self.category}] {self.title} - {self.author}"
+
+
+class PostComment(models.Model):
+    post = models.ForeignKey(Post, on_delete=models.CASCADE, related_name='comments')
     author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     content = models.TextField()
-    
-    # Auto-translated fields
-    content_hi = models.TextField(blank=True, null=True) # Hindi
-    content_mr = models.TextField(blank=True, null=True) # Marathi
-    
-    category = models.CharField(max_length=50, choices=CATEGORIES, default='Crops')
-    
-    # Stores the Cloudinary string URL sent from React
-    image_url = models.URLField(max_length=1000, blank=True, null=True)
-    
-    likes_count = models.PositiveIntegerField(default=0)
+    is_expert_verified = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        ordering = ['-is_expert_verified', 'created_at']
+
+
+class PostUpvote(models.Model):
+    post = models.ForeignKey(Post, on_delete=models.CASCADE, related_name='upvotes')
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('post', 'user')
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Async Crop Scan Job
+# ──────────────────────────────────────────────────────────────────────
+class CropScanJob(models.Model):
+    """
+    Persists a crop diagnostic scan request so results survive page refreshes.
+    The AI pipeline runs inside a Celery background task; the frontend polls
+    GET /api/scan/jobs/{id}/ until status reaches COMPLETED or FAILED.
+    """
+
+    class Status(models.TextChoices):
+        PENDING    = 'PENDING',    'Pending'
+        PROCESSING = 'PROCESSING', 'Processing'
+        COMPLETED  = 'COMPLETED',  'Completed'
+        FAILED     = 'FAILED',     'Failed'
+
+    user       = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='scan_jobs')
+    status     = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING, db_index=True)
+
+    # User-supplied context
+    crop_hint  = models.CharField(max_length=100, blank=True, default='')
+    language   = models.CharField(max_length=10, default='en')
+
+    # Raw image stored in DB so the Celery worker can process it without a shared filesystem
+    image_data = models.BinaryField()
+
+    # Pipeline output — null until COMPLETED
+    result         = models.JSONField(null=True, blank=True)
+    error_message  = models.TextField(blank=True, default='')
+
+    created_at   = models.DateTimeField(auto_now_add=True, db_index=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
         ordering = ['-created_at']
+
+    def __str__(self):
+        return f"ScanJob #{self.id} [{self.status}] — {self.user}"
+
+# ──────────────────────────────────────────────────────────────────────
+# User Notification
+# ──────────────────────────────────────────────────────────────────────
+class UserNotification(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='notifications')
+    title = models.CharField(max_length=255)
+    message = models.TextField()
+    is_read = models.BooleanField(default=False)
+    link = models.CharField(max_length=255, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Notification for {self.user}: {self.title}"
