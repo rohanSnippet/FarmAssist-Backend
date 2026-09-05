@@ -1,11 +1,12 @@
 import threading
 import time
 import logging
-from django.db import transaction
 from django.utils.timezone import now
-import sys
 
 logger = logging.getLogger(__name__)
+
+# Flag to prevent spawning duplicate worker threads (e.g. Django dev server runs ready() twice)
+_worker_started = False
 
 def process_queue():
     from .models import CropScanJob, UserNotification
@@ -84,8 +85,12 @@ def process_queue():
             time.sleep(5)
 
 def start_worker():
-    if 'runserver' not in sys.argv:
+    global _worker_started
+    if _worker_started:
+        logger.info("Queue worker already running — skipping duplicate start.")
         return
-        
-    thread = threading.Thread(target=process_queue, daemon=True)
+
+    _worker_started = True
+    thread = threading.Thread(target=process_queue, daemon=True, name="CropScanQueueWorker")
     thread.start()
+    logger.info("CropScan Queue Worker thread launched.")
