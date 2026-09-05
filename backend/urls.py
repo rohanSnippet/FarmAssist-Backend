@@ -14,7 +14,12 @@ from api.views import (
     PestAlertBroadcastViewSet, 
     PestDetectionViewSet,
     PostViewSet,
-    CropScannerAPIView # <-- Added here
+    CropScannerAPIView,
+    CropScanSubmitView,
+    CropScanJobViewSet,
+    CropScanJobImageView,
+    UserNotificationViewSet,
+    stream_notifications,
 )
 
 from recommendation.views import (
@@ -33,6 +38,8 @@ router.register(r'detections', PestDetectionViewSet, basename='detection')
 router.register(r'alerts', PestAlertBroadcastViewSet, basename='alert')
 router.register(r'seasons', FarmSeasonViewSet, basename='season')
 router.register(r'posts', PostViewSet, basename='community-post')
+router.register(r'scan/jobs', CropScanJobViewSet, basename='scan-job')
+router.register(r'notifications', UserNotificationViewSet, basename='notification')
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -53,8 +60,11 @@ urlpatterns = [
     path('market-forecast/', MarketForecastView.as_view(), name='market_forecast'),
     path('top-market-forecast/', TopCropsForecastView.as_view(), name='top_market_forecast'),
     
-    # 2. Add the AI scan endpoint here
-    path('api/scan/', CropScannerAPIView.as_view(), name='crop-scan'),
+    # Scan endpoints
+    path('api/scan/', CropScannerAPIView.as_view(), name='crop-scan'),        # legacy sync scan
+    path('api/scan/submit/', CropScanSubmitView.as_view(), name='scan-submit'), # async queue submit
+    path('api/scan/jobs/<int:pk>/image/', CropScanJobImageView.as_view(), name='scan-job-image'),
+    path('api/stream/', stream_notifications, name='stream_notifications'),
     
     # This single line handles /api/farms/, /api/detections/, and /api/alerts/
     path('api/', include(router.urls)),
