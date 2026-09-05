@@ -165,10 +165,10 @@ DATABASES = {
 
 DATA_GOV_API_KEY = os.environ.get("DATA_GOV_API_KEY");
 
-REDIS_URL=os.environ.get(
-    "REDIS_URL",
-    "redis://127.0.0.1:6379"
-)
+REDIS_URL = os.environ.get("REDIS_URL")
+
+if not REDIS_URL:
+    raise ValueError("REDIS_URL environment variable is not set")
 
 # backend/settings.py
 CACHES = {
