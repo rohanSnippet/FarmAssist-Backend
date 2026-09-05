@@ -169,6 +169,15 @@ def calculate_pest_spread(detection_id):
         max_risk_score=round(max(0.0, min(100.0, max_risk_overall)), 1),
         notified_users=list(affected_user_ids),
     )
+
+    try:
+        from .sse import push_event
+        import json
+        for uid in affected_user_ids:
+            push_event(uid, json.dumps({"type": "new_alert"}))
+    except Exception as e:
+        logger.error(f"[BroadcastTask] SSE push failed: {e}")
+
     logger.info(
         f"[BroadcastTask] ✅ SUCCESS | Broadcast sent to {len(affected_user_ids)} user(s) "
         f"from farm='{source_farm_name}'."

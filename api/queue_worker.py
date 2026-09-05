@@ -30,7 +30,7 @@ def process_queue():
                     job.refresh_from_db()
                     
                     if job.status == CropScanJob.Status.COMPLETED:
-                        UserNotification.objects.create(
+                        notification = UserNotification.objects.create(
                             user=job.user,
                             title="Crop Scan Complete",
                             message=f"Your scan for {job.crop_hint or 'Crop'} is ready. Diagnosis: {job.result.get('primary_diagnosis', 'Unknown')}",
@@ -38,9 +38,21 @@ def process_queue():
                         )
                         from .sse import push_event
                         import json
-                        push_event(job.user.id, json.dumps({"type": "job_completed", "job_id": job.id, "crop": job.crop_hint or "Crop"}))
+                        push_event(job.user.id, json.dumps({
+                            "type": "job_completed", 
+                            "job_id": job.id, 
+                            "crop": job.crop_hint or "Crop",
+                            "notification": {
+                                "id": notification.id,
+                                "title": notification.title,
+                                "message": notification.message,
+                                "link": notification.link,
+                                "created_at": notification.created_at.isoformat(),
+                                "is_read": False
+                            }
+                        }))
                     else:
-                        UserNotification.objects.create(
+                        notification = UserNotification.objects.create(
                             user=job.user,
                             title="Crop Scan Failed",
                             message=f"Failed to scan {job.crop_hint or 'Crop'}. Please try again.",
@@ -48,7 +60,19 @@ def process_queue():
                         )
                         from .sse import push_event
                         import json
-                        push_event(job.user.id, json.dumps({"type": "job_failed", "job_id": job.id, "crop": job.crop_hint or "Crop"}))
+                        push_event(job.user.id, json.dumps({
+                            "type": "job_failed", 
+                            "job_id": job.id, 
+                            "crop": job.crop_hint or "Crop",
+                            "notification": {
+                                "id": notification.id,
+                                "title": notification.title,
+                                "message": notification.message,
+                                "link": notification.link,
+                                "created_at": notification.created_at.isoformat(),
+                                "is_read": False
+                            }
+                        }))
 
                 except Exception as e:
                     logger.error(f"Worker thread error processing job {job.id}: {e}")

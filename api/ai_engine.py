@@ -131,7 +131,7 @@ def _query_roboflow(model_id: str, image_bytes: bytes) -> list:
         response = requests.post(
             url,
             params={"api_key": ROBOFLOW_API_KEY, "confidence": 35},
-            files={"file": image_bytes},
+            files={"file": ("image.jpg", image_bytes, "image/jpeg")},
             timeout=8.0,
         )
         if response.status_code == 200:
@@ -332,6 +332,7 @@ def run_gemini_fallback(image_bytes: bytes, crop: str) -> dict:
     if not gemini_client:
         logger.warning("[Stage 6] Gemini client unavailable — returning unknown.")
         return {
+            "crop":          crop,
             "category":      "unknown",
             "name":          "Unidentified Condition",
             "confidence":    0.3,
@@ -340,9 +341,10 @@ def run_gemini_fallback(image_bytes: bytes, crop: str) -> dict:
 
     prompt = f"""
     Analyze this crop image ({crop}). Determine whether it exhibits insect pest damage,
-    disease symptoms, or is healthy.
+    disease symptoms, or is healthy. Also identify the crop if it is unknown or general.
     Return strictly JSON with keys:
     {{
+      "crop": "<specific crop name>",
       "category": "pest" | "disease" | "healthy" | "mix_both",
       "diagnosis_name": "<specific name of pest or disease, or 'Healthy Crop'>",
       "confidence": <float 0.0 to 1.0>,
@@ -364,6 +366,7 @@ def run_gemini_fallback(image_bytes: bytes, crop: str) -> dict:
             f"category='{data.get('category')}', confidence={data.get('confidence')}"
         )
         return {
+            "crop":          data.get("crop", crop),
             "category":      data.get("category", "unknown"),
             "name":          data.get("diagnosis_name", "Unknown Issue"),
             "confidence":    float(data.get("confidence", 0.5)),
@@ -372,6 +375,7 @@ def run_gemini_fallback(image_bytes: bytes, crop: str) -> dict:
     except Exception as e:
         logger.error(f"[Stage 6] Gemini fallback failed: {e}")
         return {
+            "crop":          crop,
             "category":      "unknown",
             "name":          "Unidentified Issue",
             "confidence":    0.3,
@@ -481,7 +485,9 @@ def process_crop_diagnostic_pipeline(
     # -- Stage 6: Controlled Fallback — ONLY fires for 'uncertain' -----
     if result["condition_type"] == "uncertain":
         fallback = run_gemini_fallback(image_bytes, detected_crop)
+        detected_crop = fallback.get("crop", detected_crop)
         result.update({
+            "crop":              detected_crop,
             "condition_type":    fallback["category"],
             "primary_diagnosis": fallback["name"],
             "confidence":        fallback["confidence"],
