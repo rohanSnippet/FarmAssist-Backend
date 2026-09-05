@@ -167,19 +167,27 @@ DATA_GOV_API_KEY = os.environ.get("DATA_GOV_API_KEY");
 
 REDIS_URL = os.environ.get("REDIS_URL")
 
-if not REDIS_URL:
-    raise ValueError("REDIS_URL environment variable is not set")
-
-# backend/settings.py
-CACHES = {
-    "default": {
-        "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": f"{REDIS_URL}/1", # Ensure your Docker Redis container is running
-        "OPTIONS": {
-            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+if REDIS_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "django_redis.cache.RedisCache",
+            "LOCATION": f"{REDIS_URL}/1",
+            "OPTIONS": {
+                "CLIENT_CLASS": "django_redis.client.DefaultClient",
+                # Don't crash the app if Redis is temporarily unavailable
+                "IGNORE_EXCEPTIONS": True,
+            },
+            "KEY_PREFIX": "farmassist",
         }
     }
-}
+else:
+    import warnings
+    warnings.warn("REDIS_URL is not set — falling back to in-memory cache (no persistence)")
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        }
+    }
 
 AUTH_PASSWORD_VALIDATORS = [
     {
