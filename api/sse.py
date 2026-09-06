@@ -1,33 +1,27 @@
-import queue
+import redis
+from django.conf import settings
+import logging
 
-# A global dictionary mapping user_id -> list of queue.Queue
-# This is a simple in-memory pub/sub mechanism for SSE.
-active_streams = {}
+logger = logging.getLogger(__name__)
 
-def get_user_queues(user_id):
-    return active_streams.get(user_id, [])
-
-def add_stream(user_id, q):
-    if user_id not in active_streams:
-        active_streams[user_id] = []
-    active_streams[user_id].append(q)
-
-def remove_stream(user_id, q):
-    if user_id in active_streams:
-        try:
-            active_streams[user_id].remove(q)
-            if not active_streams[user_id]:
-                del active_streams[user_id]
-        except ValueError:
-            pass
+def get_redis_client():
+    if not hasattr(settings, 'REDIS_URL') or not settings.REDIS_URL:
+        logger.warning("REDIS_URL is not set. Real-time events may not work if running multiple workers.")
+        return None
+    try:
+        return redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
+    except Exception as e:
+        logger.error(f"Failed to connect to Redis for SSE: {e}")
+        return None
 
 def push_event(user_id, event_data):
     """
-    Pushes an event string to all active streams for a specific user.
+    Pushes an event string to the Redis channel for a specific user.
     """
-    queues = get_user_queues(user_id)
-    for q in queues:
+    client = get_redis_client()
+    if client:
         try:
-            q.put_nowait(event_data)
-        except queue.Full:
-            pass
+            channel = f"user_events_{user_id}"
+            client.publish(channel, event_data)
+        except Exception as e:
+            logger.error(f"Error publishing SSE event to Redis: {e}")

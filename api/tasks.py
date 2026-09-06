@@ -10,7 +10,8 @@ logger = logging.getLogger(__name__)
 # ======================================================================
 # CROP SCAN BACKGROUND TASK
 # ======================================================================
-def run_crop_scan_task(job_id: int):
+@shared_task(bind=True)
+def run_crop_scan_task(self, job_id: int):
     """
     Runs the full AI diagnostic pipeline in the background.
     Loaded by the CropScanSubmitView after creating a CropScanJob row.
@@ -51,6 +52,29 @@ def run_crop_scan_task(job_id: int):
             f"[ScanTask] Job #{job_id} → COMPLETED | "
             f"condition='{result.get('condition_type')}' | confidence={result.get('confidence')}"
         )
+        
+        from .models import UserNotification
+        notification = UserNotification.objects.create(
+            user=job.user,
+            title="Crop Scan Complete",
+            message=f"Your scan for {job.crop_hint or 'Crop'} is ready. Diagnosis: {job.result.get('primary_diagnosis', 'Unknown')}",
+            link=f"/pest-history?highlight_id={job.id}"
+        )
+        from .sse import push_event
+        import json
+        push_event(job.user.id, json.dumps({
+            "type": "job_completed", 
+            "job_id": job.id, 
+            "crop": job.crop_hint or "Crop",
+            "notification": {
+                "id": notification.id,
+                "title": notification.title,
+                "message": notification.message,
+                "link": notification.link,
+                "created_at": notification.created_at.isoformat(),
+                "is_read": False
+            }
+        }))
 
     except Exception as exc:
         logger.error(f"[ScanTask] Job #{job_id} → FAILED: {exc}", exc_info=True)
@@ -58,6 +82,30 @@ def run_crop_scan_task(job_id: int):
         job.error_message = str(exc)
         job.completed_at  = now()
         job.save(update_fields=['status', 'error_message', 'completed_at'])
+        
+        from .models import UserNotification
+        notification = UserNotification.objects.create(
+            user=job.user,
+            title="Crop Scan Failed",
+            message=f"Failed to scan {job.crop_hint or 'Crop'}. Please try again.",
+            link=f"/pest-history"
+        )
+        from .sse import push_event
+        import json
+        push_event(job.user.id, json.dumps({
+            "type": "job_failed", 
+            "job_id": job.id, 
+            "crop": job.crop_hint or "Crop",
+            "notification": {
+                "id": notification.id,
+                "title": notification.title,
+                "message": notification.message,
+                "link": notification.link,
+                "created_at": notification.created_at.isoformat(),
+                "is_read": False
+            }
+        }))
+
 
 
 def calculate_pest_spread(detection_id):

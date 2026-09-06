@@ -535,7 +535,8 @@ class CropScanSubmitView(APIView):
             image_data = image_bytes,
         )
 
-        # The task is picked up by the sequential queue worker running in apps.py
+        from .tasks import run_crop_scan_task
+        run_crop_scan_task.delay(job.id)
 
 
         return Response(
@@ -621,24 +622,35 @@ def stream_notifications(request):
         return StreamingHttpResponse("Unauthorized", status=401)
     
     def event_stream():
-        from .sse import add_stream, remove_stream
-        q = queue.Queue()
-        add_stream(user.id, q)
+        from .sse import get_redis_client
+        client = get_redis_client()
+        pubsub = None
+        if client:
+            pubsub = client.pubsub()
+            pubsub.subscribe(f"user_events_{user.id}")
+        
         try:
             # Yield initial connection success
             yield f"data: {{\"type\": \"connected\"}}\n\n"
             
             while True:
-                # Wait for an event with timeout to keep connection alive
-                try:
-                    event_data = q.get(timeout=30)
-                    yield f"data: {event_data}\n\n"
-                except queue.Empty:
+                if pubsub:
+                    message = pubsub.get_message(ignore_subscribe_messages=True, timeout=30)
+                    if message and message['type'] == 'message':
+                        yield f"data: {message['data']}\n\n"
+                    else:
+                        yield f"data: {{\"type\": \"ping\"}}\n\n"
+                else:
+                    import time
+                    time.sleep(30)
                     yield f"data: {{\"type\": \"ping\"}}\n\n"
         except Exception:
             pass
         finally:
-            remove_stream(user.id, q)
+            if pubsub:
+                pubsub.close()
+            if client:
+                client.close()
             
     response = StreamingHttpResponse(event_stream(), content_type='text/event-stream')
     response['Cache-Control'] = 'no-cache'
