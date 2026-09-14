@@ -85,6 +85,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.gis',
     'django.contrib.staticfiles',
+    'knowledge_base',
     'api',
     'recommendation',
     'rest_framework',

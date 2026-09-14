@@ -6,6 +6,9 @@ import requests
 from google import genai
 from google.genai import types
 
+from knowledge_base.ontology import resolve_ml_prediction
+from knowledge_base.recommendation import get_deterministic_treatments, get_management_practices, get_rag_context
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
@@ -388,40 +391,74 @@ def run_gemini_fallback(image_bytes: bytes, crop: str) -> dict:
 # =====================================================================
 def generate_treatment_advisory(diagnosis_data: dict, lang_code: str = "en") -> str:
     """
-    Uses Gemini 2.5 Flash as the agronomic Knowledge Base to generate
-    an IPM treatment plan. Output is localized to the user's language (Stage 8).
+    Retrieves facts from the deterministic SQL Knowledge Base and uses Gemini ONLY
+    to format and localize the output. Prevents hallucination.
     """
     if not gemini_client:
         return "1. Service unavailable.\n2. Please try again later.\n3. Contact local KVK."
 
     target_lang = LANGUAGE_MAPPING.get(lang_code, "English")
     condition   = diagnosis_data["condition_type"]
-    diagnosis   = diagnosis_data["primary_diagnosis"]
+    diagnosis_name   = diagnosis_data["primary_diagnosis"]
     crop        = diagnosis_data["crop"]
 
     logger.info(
         f"[Stage 7] ADVISORY ENGINE | crop='{crop}', "
-        f"diagnosis='{diagnosis}', lang='{target_lang}'"
+        f"diagnosis='{diagnosis_name}', lang='{target_lang}'"
     )
 
-    grounded_prompt = f"""
-    Crop: {crop}
-    Condition: {condition}
-    Diagnosis: {diagnosis}
-    Language: {target_lang}
+    # 1. Resolve ML prediction to Knowledge Base Ontology
+    kb_diagnosis = resolve_ml_prediction(crop, diagnosis_name)
 
-    You are an expert agronomist. Provide EXACTLY 3 short bullet points for treatment.
-    RULES:
-    - Point 1: Immediate action (max 15 words).
-    - Point 2: Chemical/Organic treatment with exact dosage (max 25 words).
-    - Point 3: Prevention step (max 15 words).
-    - NO introductory sentences. NO concluding sentences.
-    - Output strictly in the requested Language script.
-    - Use the exact format:
-    1. [Text]
-    2. [Text]
-    3. [Text]
-    """
+    if not kb_diagnosis:
+        logger.warning(f"[Stage 7] No KB match found for {crop} - {diagnosis_name}. Falling back to general advice.")
+        grounded_prompt = f"""
+        Crop: {crop}
+        Condition: {condition}
+        Diagnosis: {diagnosis_name}
+        Language: {target_lang}
+        
+        You are an expert agronomist. We do not have authoritative chemical data for this condition.
+        Provide EXACTLY 3 short bullet points for general organic/cultural treatment.
+        RULES:
+        - Point 1: Immediate action (max 15 words).
+        - Point 2: General organic treatment (max 25 words). DO NOT recommend specific synthetic chemicals.
+        - Point 3: Prevention step (max 15 words).
+        - Output strictly in {target_lang}.
+        """
+    else:
+        logger.info(f"[Stage 7] KB Match Found: {kb_diagnosis}. Retrieving deterministic treatments.")
+        treatments = get_deterministic_treatments(kb_diagnosis)
+        practices = get_management_practices(kb_diagnosis)
+        rag_context = get_rag_context(kb_diagnosis)
+
+        # Build strict fact context
+        treatment_text = "No chemical treatments registered."
+        if treatments:
+            t = treatments[0]
+            treatment_text = f"Chemical: {t['active_ingredient']} ({t['formulation_type']}). Dose: {t['dose']}. Method: {t['application_method']}. (Source: {t['source_authority']})"
+        
+        cultural_text = "Standard field hygiene."
+        if practices.get("CULTURAL") and len(practices["CULTURAL"]) > 0:
+            cultural_text = practices["CULTURAL"][0]
+
+        grounded_prompt = f"""
+        Language: {target_lang}
+        Condition: {kb_diagnosis.diagnosis_name}
+        
+        You are a translator and formatter. You MUST strictly use the following facts to generate 3 bullet points. Do not invent any dosages or chemicals.
+        
+        FACTS:
+        - Cultural: {cultural_text}
+        - Treatment: {treatment_text}
+        - Context: {rag_context[:200]}
+        
+        RULES:
+        - Point 1: Immediate cultural action based on facts (max 15 words).
+        - Point 2: Chemical/Organic treatment EXACTLY as provided in FACTS (max 30 words).
+        - Point 3: Prevention/Context step (max 15 words).
+        - Output strictly in {target_lang}.
+        """
 
     try:
         response = gemini_client.models.generate_content(
