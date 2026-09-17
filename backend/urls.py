@@ -24,6 +24,9 @@ from api.views import (
     CropScanJobImageView,
     UserNotificationViewSet,
     stream_notifications,
+    VoiceIntentView,
+    ActiveVoiceTaskView,
+    TTSView,
 )
 
 from recommendation.views import (
@@ -70,6 +73,9 @@ urlpatterns = [
     path('api/scan/submit/', CropScanSubmitView.as_view(), name='scan-submit'), # async queue submit
     path('api/scan/jobs/<int:pk>/image/', CropScanJobImageView.as_view(), name='scan-job-image'),
     path('api/stream/', stream_notifications, name='stream_notifications'),
+    path('api/voice/intent/', VoiceIntentView.as_view(), name='voice-intent'),
+    path('api/voice/intent/active/', ActiveVoiceTaskView.as_view(), name='voice-intent-active'),
+    path('api/voice/tts/', TTSView.as_view(), name='voice-tts'),
     
     # This single line handles /api/farms/, /api/detections/, and /api/alerts/
     path('api/', include(router.urls)),

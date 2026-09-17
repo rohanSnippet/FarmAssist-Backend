@@ -523,9 +523,17 @@ class CropScanSubmitView(APIView):
 
         crop_hint = request.data.get('crop_hint', '').strip()
         language  = request.data.get('language', 'en').strip() or 'en'
+        farm_id = request.data.get('farm_id')
 
         # Read image bytes and persist in DB so no shared filesystem is needed
         image_bytes = image_file.read()
+
+        from .services.context_resolver import resolve_context
+        from dataclasses import asdict
+        from django.db import transaction
+
+        # Resolve Context
+        context = resolve_context(request.user, farm_id=farm_id)
 
         job = CropScanJob.objects.create(
             user       = request.user,
@@ -533,10 +541,12 @@ class CropScanSubmitView(APIView):
             crop_hint  = crop_hint,
             language   = language,
             image_data = image_bytes,
+            farm_season_id = context.farm_season_id,
+            context_snapshot = asdict(context)
         )
 
         from .tasks import run_crop_scan_task
-        run_crop_scan_task.delay(job.id)
+        transaction.on_commit(lambda: run_crop_scan_task.delay(job.id))
 
 
         return Response(
@@ -655,3 +665,100 @@ def stream_notifications(request):
     response = StreamingHttpResponse(event_stream(), content_type='text/event-stream')
     response['Cache-Control'] = 'no-cache'
     return response
+
+# ======================================================================
+# Voice Assistant Intent View
+# ======================================================================
+
+class VoiceIntentView(APIView):
+    """
+    POST /api/voice/intent/
+    Validates Voice Intents extracted by the frontend/STT and processes actions securely.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from .services.voice.voice_intent_service import handle_workflow_event
+        
+        result = handle_workflow_event(request.user, request.data)
+        
+        # Always return 200 so the frontend can handle state cleanly
+        return Response(result, status=200)
+
+class ActiveVoiceTaskView(APIView):
+    """
+    GET /api/voice/intent/active/
+    Returns the active VoiceTask for the user to support task restoration.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .models import VoiceTask
+        
+        # Look for any non-completed/non-cancelled task for this user
+        active_task = VoiceTask.objects.filter(
+            user=request.user
+        ).exclude(
+            status__in=['COMPLETED', 'CANCELLED', 'FAILED', 'EXPIRED']
+        ).order_by('-updated_at').first()
+        
+        if not active_task:
+            return Response({"active": False}, status=200)
+        
+        # Reconstruct the awaiting state from current_step so the frontend
+        # can restore its UI correctly. We infer what the workflow is waiting
+        # for based on the persisted step name.
+        step = active_task.current_step
+        awaiting = None
+        if step and step.startswith("WAITING_FOR_"):
+            awaiting = {"type": "USER_INPUT", "input": step.replace("WAITING_FOR_", "")}
+        elif step == "WAITING_FOR_CELERY":
+            awaiting = {
+                "type": "BACKEND_EVENT",
+                "event": "SCAN_COMPLETED",
+                "resource_id": active_task.collected_data.get("scan_job_id")
+            }
+        elif step == "WAITING_FOR_IMAGE":
+            awaiting = {"type": "APPLICATION_EVENT", "event": "SCAN_SUBMITTED"}
+            
+        return Response({
+            "active": True,
+            "task_id": str(active_task.id),
+            "workflow": active_task.workflow_id,
+            "status": active_task.status,
+            "step": active_task.current_step,
+            "awaiting": awaiting
+        }, status=200)
+
+import urllib.request
+import urllib.parse
+from django.http import HttpResponse
+
+class TTSView(APIView):
+    """
+    GET /api/voice/tts/?text=Hello&lang=en-IN
+    Proxies Google Text-to-Speech using standard libraries to avoid CORS and browser support issues, and requires no pip dependencies.
+    """
+    permission_classes = [] # Allow unauthenticated for simple voice fetch
+
+    def get(self, request, *args, **kwargs):
+        text = request.query_params.get('text')
+        lang = request.query_params.get('lang', 'en-IN')
+        
+        if not text:
+            return HttpResponse(status=400)
+            
+        try:
+            short_lang = lang.split('-')[0].lower()
+            url = f"https://translate.google.com/translate_tts?ie=UTF-8&q={urllib.parse.quote(text)}&tl={short_lang}&client=tw-ob"
+            
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req) as resp:
+                audio_data = resp.read()
+            
+            response = HttpResponse(audio_data, content_type="audio/mpeg")
+            response["Access-Control-Allow-Origin"] = "*"
+            return response
+        except Exception as e:
+            print("TTS Proxy Error:", e)
+            return HttpResponse(status=500)
