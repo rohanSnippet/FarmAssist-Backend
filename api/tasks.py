@@ -42,6 +42,7 @@ def run_crop_scan_task(self, job_id: int):
             image_bytes=image_bytes,
             crop_hint=job.crop_hint or None,
             lang_code=job.language or 'en',
+            context_snapshot=job.context_snapshot
         )
 
         job.status       = CropScanJob.Status.COMPLETED
@@ -229,4 +230,4 @@ def calculate_pest_spread(detection_id):
     logger.info(
         f"[BroadcastTask] ✅ SUCCESS | Broadcast sent to {len(affected_user_ids)} user(s) "
         f"from farm='{source_farm_name}'."
-    )
+    )

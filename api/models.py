@@ -3,6 +3,7 @@ from django.contrib.gis.db import models
 import io, sys
 from django.core.files.uploadedfile import InMemoryUploadedFile
 from django.conf import settings
+import importlib
 
 # User
 class UserManager(BaseUserManager):
@@ -204,6 +205,16 @@ class CropScanJob(models.Model):
     result         = models.JSONField(null=True, blank=True)
     error_message  = models.TextField(blank=True, default='')
 
+    # Agricultural Context Snapshot
+    farm_season = models.ForeignKey(
+        'FarmSeason', 
+        null=True, 
+        blank=True, 
+        on_delete=models.SET_NULL, 
+        related_name="scan_jobs"
+    )
+    context_snapshot = models.JSONField(default=dict, blank=True)
+
     created_at   = models.DateTimeField(auto_now_add=True, db_index=True)
     completed_at = models.DateTimeField(null=True, blank=True)
 
@@ -228,4 +239,60 @@ class UserNotification(models.Model):
         ordering = ['-created_at']
 
     def __str__(self):
-        return f"Notification for {self.user}: {self.title}"
+        return f"Notification for {self.user}: {self.title}"
+
+# ──────────────────────────────────────────────────────────────────────
+# Voice Workflow Persistence
+# ──────────────────────────────────────────────────────────────────────
+class VoiceTask(models.Model):
+    """
+    Persists the state of a multi-turn voice interaction workflow.
+    """
+    class Status(models.TextChoices):
+        ACTIVE = 'ACTIVE', 'Active'
+        WAITING_FOR_USER = 'WAITING_FOR_USER', 'Waiting for User'
+        WAITING_FOR_UI = 'WAITING_FOR_UI', 'Waiting for UI Event'
+        WAITING_FOR_BACKEND = 'WAITING_FOR_BACKEND', 'Waiting for Backend'
+        WAITING_FOR_CONFIRMATION = 'WAITING_FOR_CONFIRMATION', 'Waiting for Confirmation'
+        PAUSED = 'PAUSED', 'Paused'
+        COMPLETED = 'COMPLETED', 'Completed'
+        CANCELLED = 'CANCELLED', 'Cancelled'
+        FAILED = 'FAILED', 'Failed'
+        EXPIRED = 'EXPIRED', 'Expired'
+
+    id = models.UUIDField(primary_key=True, default=importlib.import_module('uuid').uuid4, editable=False)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='voice_tasks')
+    workflow_id = models.CharField(max_length=100, db_index=True)
+    status = models.CharField(max_length=30, choices=Status.choices, default=Status.ACTIVE, db_index=True)
+    current_step = models.CharField(max_length=100)
+    
+    language = models.CharField(max_length=10, default='en')
+    collected_data = models.JSONField(default=dict, blank=True)
+    resolved_context = models.JSONField(default=dict, blank=True)
+    
+    # For interruptions: if a task interrupts this one, we store the child's ID (or parent's ID).
+    # We will use parent_task to build a stack.
+    parent_task = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='child_tasks')
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-updated_at']
+
+    def __str__(self):
+        return f"{self.workflow_id} ({self.status}) for {self.user}"
+
+class VoiceEventLog(models.Model):
+    """
+    Idempotency guard: Tracks events processed by the WorkflowEngine to prevent duplicate executions.
+    """
+    event_id = models.CharField(max_length=255, unique=True, db_index=True)
+    task = models.ForeignKey(VoiceTask, on_delete=models.CASCADE, null=True, blank=True)
+    event_type = models.CharField(max_length=100)
+    payload = models.JSONField(default=dict, blank=True)
+    processed_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Event {self.event_id} ({self.event_type})"

@@ -356,7 +356,7 @@ def run_gemini_fallback(image_bytes: bytes, crop: str) -> dict:
     """
     try:
         response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=[
                 types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
                 prompt,
@@ -389,7 +389,7 @@ def run_gemini_fallback(image_bytes: bytes, crop: str) -> dict:
 # =====================================================================
 # STAGE 7 & 8 — KNOWLEDGE BASE + ADVISORY ENGINE + LOCALIZATION
 # =====================================================================
-def generate_treatment_advisory(diagnosis_data: dict, lang_code: str = "en") -> str:
+def generate_treatment_advisory(diagnosis_data: dict, lang_code: str = "en", context_snapshot: dict = None) -> str:
     """
     Retrieves facts from the deterministic SQL Knowledge Base and uses Gemini ONLY
     to format and localize the output. Prevents hallucination.
@@ -401,6 +401,7 @@ def generate_treatment_advisory(diagnosis_data: dict, lang_code: str = "en") -> 
     condition   = diagnosis_data["condition_type"]
     diagnosis_name   = diagnosis_data["primary_diagnosis"]
     crop        = diagnosis_data["crop"]
+    context_snapshot = context_snapshot or {}
 
     logger.info(
         f"[Stage 7] ADVISORY ENGINE | crop='{crop}', "
@@ -428,41 +429,49 @@ def generate_treatment_advisory(diagnosis_data: dict, lang_code: str = "en") -> 
         """
     else:
         logger.info(f"[Stage 7] KB Match Found: {kb_diagnosis}. Retrieving deterministic treatments.")
-        treatments = get_deterministic_treatments(kb_diagnosis)
+        
+        # We need to construct a dummy AgriculturalContext object from the dictionary
+        # to pass to get_deterministic_treatments, or refactor it.
+        # But we can just use the dict if we build a mock context.
+        class MockContext:
+            class MockStage:
+                def __init__(self, name):
+                    self.stage_name = name
+            def __init__(self, snapshot):
+                gs = snapshot.get("growth_stage", {})
+                self.growth_stage = self.MockStage(gs.get("stage_name"))
+        
+        treatments = get_deterministic_treatments(kb_diagnosis, MockContext(context_snapshot))
         practices = get_management_practices(kb_diagnosis)
         rag_context = get_rag_context(kb_diagnosis)
-
-        # Build strict fact context
-        treatment_text = "No chemical treatments registered."
-        if treatments:
-            t = treatments[0]
-            treatment_text = f"Chemical: {t['active_ingredient']} ({t['formulation_type']}). Dose: {t['dose']}. Method: {t['application_method']}. (Source: {t['source_authority']})"
         
-        cultural_text = "Standard field hygiene."
-        if practices.get("CULTURAL") and len(practices["CULTURAL"]) > 0:
-            cultural_text = practices["CULTURAL"][0]
+        from api.services.advisory_service import build_structured_advisory
+        structured_advisory = build_structured_advisory(diagnosis_data, context_snapshot, treatments, practices)
 
+        # Pass the exact JSON structure to Gemini to format it safely
         grounded_prompt = f"""
         Language: {target_lang}
         Condition: {kb_diagnosis.diagnosis_name}
         
-        You are a translator and formatter. You MUST strictly use the following facts to generate 3 bullet points. Do not invent any dosages or chemicals.
+        You are a translator and formatter. You MUST strictly use the following STRUCTURED ADVISORY to generate 3 bullet points. 
+        Do not invent any dosages, chemicals, or safety statuses. If a treatment is in excluded_treatments, you MUST NOT recommend it.
+        If dose is UNAVAILABLE, state that.
         
-        FACTS:
-        - Cultural: {cultural_text}
-        - Treatment: {treatment_text}
-        - Context: {rag_context[:200]}
+        STRUCTURED ADVISORY JSON:
+        {json.dumps(structured_advisory, indent=2)}
+        
+        Context Info: {rag_context[:200]}
         
         RULES:
-        - Point 1: Immediate cultural action based on facts (max 15 words).
-        - Point 2: Chemical/Organic treatment EXACTLY as provided in FACTS (max 30 words).
+        - Point 1: Immediate cultural action based on management_practices (max 15 words).
+        - Point 2: Chemical/Organic treatment EXACTLY as provided in treatment_candidates (max 30 words). Mention any safety warnings.
         - Point 3: Prevention/Context step (max 15 words).
         - Output strictly in {target_lang}.
         """
 
     try:
         response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=grounded_prompt,
         )
         logger.info("[Stage 8] LOCALIZATION complete. Advisory ready.")
@@ -479,6 +488,7 @@ def process_crop_diagnostic_pipeline(
     image_bytes: bytes,
     crop_hint: str = None,
     lang_code: str = "en",
+    context_snapshot: dict = None,
 ) -> dict:
     """
     Orchestrates the full FarmAssist diagnostic pipeline in exact workflow order:
@@ -537,7 +547,7 @@ def process_crop_diagnostic_pipeline(
         )
 
     # -- Stage 7 & 8: Advisory Engine + Localization -------------------
-    result["advisory"] = generate_treatment_advisory(result, lang_code=lang_code)
+    result["advisory"] = generate_treatment_advisory(result, lang_code=lang_code, context_snapshot=context_snapshot)
     result["language"] = lang_code
 
     logger.info("=" * 60)
