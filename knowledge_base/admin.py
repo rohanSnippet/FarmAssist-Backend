@@ -2,7 +2,8 @@ from django.contrib import admin
 from .models import (
     Crop, Pathogen, CropDiagnosis, DiagnosisAlias,
     KnowledgeSource, KnowledgeDocument, KnowledgeChunk,
-    ManagementPractice, ChemicalTreatment, ChemicalExtractionDraft
+    ManagementPractice, ChemicalTreatment, ChemicalExtractionDraft,
+    GrowthStage, CropStageProfile
 )
 
 @admin.register(Crop)
@@ -50,14 +51,16 @@ class KnowledgeChunkAdmin(admin.ModelAdmin):
 @admin.register(ManagementPractice)
 class ManagementPracticeAdmin(admin.ModelAdmin):
     list_display = ('diagnosis', 'practice_type', 'region_applicability')
-    list_filter = ('practice_type', 'region_applicability', 'diagnosis__crop')
-    search_fields = ('description', 'diagnosis__diagnosis_name')
+    list_filter = ('practice_type', 'region_applicability')
+    search_fields = ('diagnosis__diagnosis_name', 'description')
+    filter_horizontal = ('applicable_stages', 'prohibited_stages')
 
 @admin.register(ChemicalTreatment)
 class ChemicalTreatmentAdmin(admin.ModelAdmin):
-    list_display = ('active_ingredient', 'diagnosis', 'dose_per_hectare_min', 'dose_unit', 'status')
-    list_filter = ('status', 'diagnosis__crop', 'mode_of_action_group')
-    search_fields = ('active_ingredient', 'diagnosis__diagnosis_name', 'trade_name_examples')
+    list_display = ('active_ingredient', 'diagnosis', 'status', 'formulation_type')
+    list_filter = ('status', 'formulation_type')
+    search_fields = ('active_ingredient', 'trade_name_examples', 'diagnosis__diagnosis_name')
+    filter_horizontal = ('applicable_stages', 'prohibited_stages')
     actions = ['mark_as_approved', 'mark_as_expired']
 
     def mark_as_approved(self, request, queryset):
@@ -83,3 +86,13 @@ class ChemicalExtractionDraftAdmin(admin.ModelAdmin):
         # For now, we just mark it.
         queryset.update(status='APPROVED')
     approve_and_migrate.short_description = "Approve and Migrate to Active Treatments"
+@admin.register(GrowthStage)
+class GrowthStageAdmin(admin.ModelAdmin):
+    list_display = ('name',)
+    search_fields = ('name',)
+
+@admin.register(CropStageProfile)
+class CropStageProfileAdmin(admin.ModelAdmin):
+    list_display = ('crop', 'growth_stage', 'stage_order', 'expected_age_min_days', 'expected_age_max_days')
+    list_filter = ('crop',)
+    search_fields = ('crop__name', 'growth_stage__name')

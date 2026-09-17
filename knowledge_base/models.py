@@ -39,6 +39,36 @@ class Crop(models.Model):
     def __str__(self):
         return self.name
 
+class GrowthStage(models.Model):
+    name = models.CharField(max_length=100, unique=True)
+
+    def __str__(self):
+        return self.name
+
+class CropStageProfile(models.Model):
+    crop = models.ForeignKey(
+        Crop,
+        on_delete=models.CASCADE,
+        related_name="stage_profiles",
+    )
+    growth_stage = models.ForeignKey(
+        GrowthStage,
+        on_delete=models.CASCADE,
+        related_name="crop_profiles",
+    )
+    stage_order = models.PositiveIntegerField()
+    expected_age_min_days = models.PositiveIntegerField(null=True, blank=True)
+    expected_age_max_days = models.PositiveIntegerField(null=True, blank=True)
+    biological_description = models.TextField(blank=True, default="")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["crop", "growth_stage"],
+                name="unique_crop_growth_stage",
+            )
+        ]
+
 class Pathogen(models.Model):
     canonical_name = models.CharField(max_length=150, unique=True, help_text="e.g. helicoverpa_armigera")
     scientific_name = models.CharField(max_length=150, blank=True, null=True)
@@ -116,6 +146,9 @@ class ManagementPractice(models.Model):
     region_applicability = models.CharField(max_length=100, blank=True, null=True, help_text="e.g. Maharashtra, All India")
     source = models.ForeignKey(KnowledgeDocument, on_delete=models.SET_NULL, null=True, blank=True)
     
+    applicable_stages = models.ManyToManyField(GrowthStage, related_name='applicable_management_practices', blank=True)
+    prohibited_stages = models.ManyToManyField(GrowthStage, related_name='prohibited_management_practices', blank=True)
+    
     def __str__(self):
         return f"[{self.get_practice_type_display()}] {self.diagnosis}"
 
@@ -139,6 +172,9 @@ class ChemicalTreatment(models.Model):
     
     source = models.ForeignKey(KnowledgeDocument, on_delete=models.CASCADE)
     status = models.CharField(max_length=15, choices=KnowledgeStatus.choices, default=KnowledgeStatus.APPROVED)
+    
+    applicable_stages = models.ManyToManyField(GrowthStage, related_name='applicable_chemical_treatments', blank=True)
+    prohibited_stages = models.ManyToManyField(GrowthStage, related_name='prohibited_chemical_treatments', blank=True)
     
     def __str__(self):
         return f"{self.active_ingredient} for {self.diagnosis}"

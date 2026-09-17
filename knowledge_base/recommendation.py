@@ -7,7 +7,7 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
-def get_deterministic_treatments(diagnosis: CropDiagnosis) -> List[Dict[str, Any]]:
+def get_deterministic_treatments(diagnosis: CropDiagnosis, context: 'AgriculturalContext' = None) -> List[Dict[str, Any]]:
     """
     Retrieves approved chemical treatments for a specific diagnosis directly from the SQL database.
     This guarantees 100% adherence to CIB&RC or ICAR recommendations and prevents hallucination.
@@ -17,15 +17,35 @@ def get_deterministic_treatments(diagnosis: CropDiagnosis) -> List[Dict[str, Any
     treatments = ChemicalTreatment.objects.filter(
         diagnosis=diagnosis,
         status=KnowledgeStatus.APPROVED
-    ).select_related('source')
+    ).select_related('source', 'source__source').prefetch_related('applicable_stages', 'prohibited_stages')
     
     results = []
+    current_stage = context.growth_stage.stage_name if context and context.growth_stage.stage_name else None
+    
     for t in treatments:
+        # Determine dose availability
+        has_dose = bool(t.dose_per_hectare_min and t.dose_unit)
+        dose_status = "AVAILABLE" if has_dose else "UNAVAILABLE"
+        dose_str = f"{t.dose_per_hectare_min} to {t.dose_per_hectare_max} {t.dose_unit} per hectare" if has_dose else "UNAVAILABLE"
+        
+        # Determine stage safety
+        stage_status = "STAGE_UNSPECIFIED"
+        if current_stage:
+            prohibited = t.prohibited_stages.filter(name__iexact=current_stage).exists()
+            applicable = t.applicable_stages.filter(name__iexact=current_stage).exists()
+            
+            if prohibited:
+                stage_status = "PROHIBITED"
+            elif applicable:
+                stage_status = "ELIGIBLE"
+                
         results.append({
             "active_ingredient": t.active_ingredient,
             "formulation_type": t.formulation_type,
             "trade_names": t.trade_name_examples,
-            "dose": f"{t.dose_per_hectare_min} to {t.dose_per_hectare_max} {t.dose_unit} per hectare",
+            "dose": dose_str,
+            "dose_status": dose_status,
+            "stage_status": stage_status,
             "water_volume": t.water_volume_per_hectare,
             "application_method": t.application_method,
             "phi_days": t.pre_harvest_interval_days,
