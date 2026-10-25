@@ -2,6 +2,12 @@ __pycache__/
 *.py[cod]
 db.sqlite3
 .env
+.env.local
 venv/
+.venv/
 .DS_Store
 serviceAccountKey.json
+google_credentials.json
+.agents/
+.claude/
+*.log
