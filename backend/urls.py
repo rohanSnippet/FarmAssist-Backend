@@ -76,6 +76,8 @@ urlpatterns = [
     path('api/voice/intent/', VoiceIntentView.as_view(), name='voice-intent'),
     path('api/voice/intent/active/', ActiveVoiceTaskView.as_view(), name='voice-intent-active'),
     path('api/voice/tts/', TTSView.as_view(), name='voice-tts'),
+    path('api/voice/', include('api.voice_api.urls')),
+
     
     # This single line handles /api/farms/, /api/detections/, and /api/alerts/
     path('api/', include(router.urls)),
