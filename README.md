@@ -123,3 +123,21 @@ Back in your **original terminal** (with the virtual environment activated), sta
 python manage.py runserver
 
 ```
+
+---
+
+### Run Mitra Voice Agent (LiveKit AI Assistant)
+
+Mitra is the personal voice navigator and agricultural assistant ("Jarvis") for farmers, supporting multi-dialect speech in Hindi, Marathi, and other regional languages.
+
+1. Open a **new terminal** and navigate to the agent directory:
+```bash
+cd LiveKitUI/mitra
+```
+
+2. Ensure your virtual environment is active, then launch the agent:
+```bash
+python src/agent.py dev
+```
+*(In production, execute `python src/agent.py start`)*
+

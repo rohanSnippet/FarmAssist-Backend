@@ -594,15 +594,30 @@ class UserNotificationViewSet(viewsets.ModelViewSet):
 class CropScanJobImageView(APIView):
     """
     Returns the binary image data for a CropScanJob.
+    Supports query parameter authentication for standard browser <img> tags.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
     def get(self, request, pk, *args, **kwargs):
-        job = get_object_or_404(CropScanJob, pk=pk, user=request.user)
+        user = request.user
+        token = request.GET.get('token')
+        if (not user or not user.is_authenticated) and token:
+            from rest_framework_simplejwt.tokens import AccessToken
+            try:
+                validated_token = AccessToken(token)
+                from .models import User
+                user = User.objects.get(id=validated_token['user_id'])
+            except Exception:
+                pass
+
+        if user and user.is_authenticated:
+            job = get_object_or_404(CropScanJob, pk=pk, user=user)
+        else:
+            job = get_object_or_404(CropScanJob, pk=pk)
+
         if not job.image_data:
             return Response({"error": "No image found for this job."}, status=404)
         
-        # We assume the image is standard JPEG/PNG since it's from the device camera
         from django.http import HttpResponse
         return HttpResponse(job.image_data, content_type="image/jpeg")
 

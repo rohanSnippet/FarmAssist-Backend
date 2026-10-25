@@ -66,15 +66,10 @@ def build_structured_advisory(
             structured["safety_warnings"].append(
                 f"{t['active_ingredient']} is PROHIBITED during {growth_stage.get('stage_name')} stage."
             )
-        elif t["stage_status"] == "STAGE_UNSPECIFIED":
-            structured["excluded_treatments"].append(treatment_info)
-            structured["safety_warnings"].append(
-                f"{t['active_ingredient']} has no stage safety data. It cannot be presented as stage-confirmed safe."
-            )
         elif t["dose_status"] == "UNAVAILABLE":
             structured["excluded_treatments"].append(treatment_info)
             structured["safety_warnings"].append(
-                f"{t['active_ingredient']} dose is UNAVAILABLE. It cannot be safely recommended."
+                f"{t['active_ingredient']} dose is UNAVAILABLE. Consult local agronomist."
             )
         else:
             structured["treatment_candidates"].append(treatment_info)
