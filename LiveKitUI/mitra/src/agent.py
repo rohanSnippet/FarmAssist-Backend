@@ -1,4 +1,11 @@
 import os
+import sys
+
+# Crucial Windows optimization: Disable the synchronous disk-reading loop_monitor watchdog
+# which freezes the asyncio event loop during traceback formatting on Windows.
+os.environ.setdefault("LIVEKIT_AGENTS_LOOP_BLOCK_WARN_MS", "0")
+os.environ.setdefault("LIVEKIT_LOG_LEVEL", "INFO")
+
 import json
 import logging
 from typing import Literal
@@ -18,6 +25,10 @@ from livekit.plugins import google, sarvam
 
 logger = logging.getLogger("farmassist.agent")
 logging.basicConfig(level=logging.INFO)
+
+# Suppress ultra-high-frequency packet-level debug logging on Windows stdout
+for noisy in ("livekit.plugins.sarvam", "livekit.plugins.sarvam.log", "livekit.agents.telemetry", "aiohttp", "aiohappyeyeballs"):
+    logging.getLogger(noisy).setLevel(logging.INFO)
 
 # ---------------------------------------------------------------------------
 # Environment
@@ -138,10 +149,19 @@ async def entrypoint(ctx: JobContext):
     }
 
     # 1. Connect agent to the room first
-    await ctx.connect()
+    try:
+        await ctx.connect()
+    except Exception as e:
+        logger.warning(f"Could not connect to room {ctx.room.name} (room may have closed): {e}")
+        return
 
     # 2. Wait for the farmer participant to join to extract cryptographically verified metadata
-    participant = await ctx.wait_for_participant()
+    try:
+        participant = await ctx.wait_for_participant()
+    except Exception as e:
+        logger.warning(f"Waiting for participant failed or room closed: {e}")
+        return
+
     raw_metadata = participant.metadata or "{}"
 
     try:
